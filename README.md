@@ -4,13 +4,17 @@ A personal AI assistant, built as [Claude Skills](https://claude.com/docs/skills
 
 The skills here live on my claude.ai account, so the assistant is reachable from the Claude app without any machine of mine being powered on. There is no server to run and no session to keep alive.
 
-## Installing a skill
+## Setup
 
-1. Open claude.ai → Settings → Capabilities → enable **Code execution and file creation**
-2. Under that, open **Customize → Skills**
-3. Upload the skill's folder — e.g. `skills/research-assistant/`
+Legion is assembled from two layers, because they have different reach.
 
-A skill is a folder containing a `SKILL.md`: YAML frontmatter with a `name` and `description`, then instructions in Markdown. The `description` is what decides whether Claude invokes the skill at all, so it carries most of the weight.
+**1. The persona → account-level instructions.** Paste [`persona.md`](persona.md) into Settings → **Instructions for Claude** (click your initials, lower left). These apply to *every* conversation on every device, with no trigger and no prerequisites — which is what makes Legion stay Legion even when no skill fires.
+
+**2. The capabilities → Skills.** Settings → Capabilities → enable **Code execution and file creation**, then **Customize → Skills**, and upload a skill folder such as `skills/research-assistant/`. Skills are account-wide and activate dynamically when relevant.
+
+A skill is a folder containing a `SKILL.md`: YAML frontmatter with a `name` and `description`, then instructions in Markdown. The `description` decides whether Claude invokes the skill at all, so it carries most of the weight.
+
+**Why not put the persona in a Project?** Project instructions only apply inside that Project, so you'd have to remember to enter it. Account-level instructions apply everywhere by default. A Project is still useful for Legion-specific *context* — it just isn't where the character belongs.
 
 ## Skills
 
@@ -28,7 +32,9 @@ You pick from a handful of preset voices (reported as Buttery, Airy, Mellow, Gla
 
 Known rough edges: voice mode is turn-based rather than full-duplex, and it can cut in during a pause (push-to-talk fixes that). Not every result renders on screen mid-call.
 
-**Unverified:** whether account-level Skills actually fire on the mobile apps, and whether they fire inside a voice call. Anthropic's Skills documentation lists web chat, Cowork, Claude Code, and Microsoft 365 as supported surfaces — the phone apps aren't named. Needs an empirical test before anything gets designed around it.
+**Unverified:** whether account-level Skills actually fire on the mobile apps, and whether they fire inside a voice call. Needs an empirical test before anything gets designed around it. (The documented warning that voice mode "cannot reference the projects and skills you have set up" is scoped to Claude **Cowork**, not to regular Projects or account-level Skills — it doesn't apply here.)
+
+Projects themselves are documented as available on every surface, including mobile.
 
 ## Design notes
 
