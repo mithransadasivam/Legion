@@ -1,57 +1,50 @@
 # Legion
 
-A personal AI assistant, built as [Claude Skills](https://claude.com/docs/skills/overview). Named after the heavy assault Titan from Titanfall 2, but it behaves like JARVIS or FRIDAY — conversational, dry, good company. It knows it's Legion, and calls me Sir the way JARVIS does.
+A personal deep-research assistant, built as a [claude.ai Project](https://support.claude.com/en/articles/9517075-what-are-projects). Named after the heavy assault Titan from Titanfall 2, but it behaves like JARVIS or FRIDAY — conversational, dry, good company. It knows it's Legion and calls me Sir.
 
-The skills here live on my claude.ai account, so the assistant is reachable from the Claude app without any machine of mine being powered on. There is no server to run and no session to keep alive.
+Legion is deliberately **summoned, not ambient.** It lives inside its own Project, so it's there when I go looking for it and nowhere else. Claude outside that Project stays completely normal.
 
 ## Setup
 
-Legion is assembled from two layers, because they have different reach.
+1. On claude.ai, create a new Project called **Legion**
+2. Open **Set project instructions**
+3. Paste in the entire contents of [`legion-project-instructions.md`](legion-project-instructions.md)
 
-**1. The persona → account-level instructions.** Paste [`persona.md`](persona.md) into Settings → **Instructions for Claude** (click your initials, lower left). These apply to *every* conversation on every device, with no trigger and no prerequisites — which is what makes Legion stay Legion even when no skill fires.
+That's it. Every chat started inside that Project is Legion; every chat outside it is ordinary Claude.
 
-**2. The capabilities → Skills.** Settings → Capabilities → enable **Code execution and file creation**, then **Customize → Skills**, and upload a skill folder such as `skills/research-assistant/`. Skills are account-wide and activate dynamically when relevant.
+Projects are available on every surface, including the iOS app, so this works from the phone.
 
-A skill is a folder containing a `SKILL.md`: YAML frontmatter with a `name` and `description`, then instructions in Markdown. The `description` decides whether Claude invokes the skill at all, so it carries most of the weight.
+## Why a Project rather than the alternatives
 
-**Why not put the persona in a Project?** Project instructions only apply inside that Project, so you'd have to remember to enter it. Account-level instructions apply everywhere by default. A Project is still useful for Legion-specific *context* — it just isn't where the character belongs.
-
-## Skills
-
-| Skill | What it does |
-|---|---|
-| [`research-assistant`](skills/research-assistant/SKILL.md) | Researches a question and reports back with a sourced, verified answer. Publishes anything longer than a screen as an artifact. |
+| Where the instructions could live | Reach | Verdict |
+|---|---|---|
+| Account-level "Instructions for Claude" | Every conversation, everywhere | Too broad — turns *all* of Claude into Legion |
+| Inside a Skill | Only when that skill's description matches | Too implicit — Legion appears unpredictably, based on topic |
+| **Project instructions** | Every chat inside that Project | **Right.** Enter the Project to summon it; leave to dismiss it |
 
 ## Voice
 
-Claude has a real **Voice mode** (beta) on iOS, Android, desktop, and web — a two-way spoken conversation, not just dictation. It speaks its answers aloud, web search works inside it, and it's available on every plan with no voice-specific usage limits.
+Claude has a real **Voice mode** (beta) on iOS, Android, desktop, and web — a two-way spoken conversation, not just dictation. It speaks answers aloud, web search works inside it, it's on every plan, and there are no voice-specific usage limits.
 
 So Legion talks. Just not in Legion's voice.
 
-You pick from a handful of preset voices (reported as Buttery, Airy, Mellow, Glassy, Rounded). **Custom and cloned voices are impossible by design** — Anthropic deliberately restricts the voice list to prevent cloning and impersonation. This isn't a missing feature that might arrive later; it's a policy decision, so the real Titanfall voice is permanently off the table here.
+You pick from a handful of preset voices (reported as Buttery, Airy, Mellow, Glassy, Rounded). **Custom and cloned voices are impossible by design** — Anthropic restricts the voice list specifically to prevent cloning and impersonation. That's a policy decision rather than a missing feature, so the real Titanfall voice is permanently off the table.
 
-Known rough edges: voice mode is turn-based rather than full-duplex, and it can cut in during a pause (push-to-talk fixes that). Not every result renders on screen mid-call.
+Rough edges: voice mode is turn-based rather than full-duplex and can cut in during a pause (push-to-talk fixes that). Not every result renders on screen mid-call.
 
-**Unverified:** whether account-level Skills actually fire on the mobile apps, and whether they fire inside a voice call. Needs an empirical test before anything gets designed around it. (The documented warning that voice mode "cannot reference the projects and skills you have set up" is scoped to Claude **Cowork**, not to regular Projects or account-level Skills — it doesn't apply here.)
+*(The documented warning that voice mode "cannot reference the projects and skills you have set up" is scoped to Claude **Cowork** — it doesn't apply to regular Projects.)*
 
-Projects themselves are documented as available on every surface, including mobile.
+## skills/ — built, not currently deployed
 
-## Design notes
+`skills/research-assistant/` holds the same research method packaged as an account-level Skill. It isn't in use: Skills are account-wide and fire whenever their description matches, which would make Legion turn up outside its Project — the opposite of the design above.
 
-**Voice-first.** Requests arrive spoken, so skills are written for speech:
-
-- Descriptions match *spoken* phrasing ("what's the deal with…", "catch me up on…"), not typed phrasing.
-- Skills avoid clarifying questions. A clarifying question costs two seconds when typing and an entire interaction when speaking one-handed. Better to pick the likeliest reading, state the assumption in one line, and carry on.
-
-**Character never costs accuracy.** The persona is explicitly subordinate to being correct — a joke that buries a real caveat isn't worth making.
-
-**Persona lives in the skill for now.** Once there are several skills it should move to a Project, so it isn't duplicated across every `SKILL.md`.
+It's kept because Skills are the modular path if Legion ever grows several distinct capabilities. For a single capability, Project instructions are simpler and better contained.
 
 ## Why not Claude Code skills
 
 The original plan used Claude Code skills reached from the phone via Remote Control. That was dropped: Remote Control only attaches to an already-running local `claude` process and dies when that process exits, which requires an always-on home-base machine. There isn't one — the Mac is a laptop that travels and the gaming PC isn't left running.
 
-Account-level Skills run on Anthropic's infrastructure instead, so no machine of mine is in the loop.
+claude.ai runs on Anthropic's infrastructure instead, so no machine of mine is in the loop.
 
 Claude Code is still the right tool when the laptop is open and the work touches local repos. It just isn't the foundation.
 
