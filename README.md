@@ -1,6 +1,6 @@
 # Legion
 
-A personal AI assistant, built as [Claude Skills](https://claude.com/docs/skills/overview). Named after the heavy assault Titan from Titanfall 2, but it behaves like JARVIS or FRIDAY — conversational, dry, good company. It knows it's Legion and calls me Pilot.
+A personal AI assistant, built as [Claude Skills](https://claude.com/docs/skills/overview). Named after the heavy assault Titan from Titanfall 2, but it behaves like JARVIS or FRIDAY — conversational, dry, good company. It knows it's Legion, and calls me Sir the way JARVIS does.
 
 The skills here live on my claude.ai account, so the assistant is reachable from the Claude app without any machine of mine being powered on. There is no server to run and no session to keep alive.
 
