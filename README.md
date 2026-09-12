@@ -1,53 +1,150 @@
 # Legion
 
-A personal deep-research assistant, built as a [claude.ai Project](https://support.claude.com/en/articles/9517075-what-are-projects). Named after the heavy assault Titan from Titanfall 2, but it behaves like JARVIS or FRIDAY — conversational, dry, good company. It knows it's Legion and calls me Sir.
+A voice assistant that runs entirely on your own machine. You talk, it answers out loud — no cloud APIs, no accounts, no usage limits, and no internet connection needed once the models are downloaded.
 
-Legion is deliberately **summoned, not ambient.** It lives inside its own Project, so it's there when I go looking for it and nowhere else. Claude outside that Project stays completely normal.
+Named after the heavy assault Titan from Titanfall 2, but it behaves more like JARVIS: calm, dry, and occasionally calls you "sir".
+
+```
+Microphone: MacBook Air Microphone
+Legion is online. Press Enter to talk, Enter again to stop. Ctrl+C to quit.
+
+You: Explain in simple terms why the sky is blue.
+Legion: The sky appears blue because of a thing called Rayleigh scattering, sir. It's
+when sunlight passes through tiny molecules of gases in the Earth's atmosphere and
+scatters in all directions. The shorter, blue wavelengths are scattered more than
+longer, red ones, giving the sky its blue colour.
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    mic([Microphone]) --> stt["faster-whisper<br/>speech → text"]
+    stt --> llm["Ollama<br/>local LLM"]
+    llm -- "streamed tokens" --> buf["Sentence buffer"]
+    buf -- "one sentence at a time" --> tts["Piper<br/>text → speech"]
+    tts --> spk([Speakers])
+```
+
+| Stage | Library | Runs on |
+|---|---|---|
+| Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`base.en`, int8) | CPU |
+| Language model | [Ollama](https://ollama.com) (`llama3.2:3b` by default) | Local, or another machine on your network |
+| Speech synthesis | [Piper](https://github.com/OHF-Voice/piper1-gpl) (`en_GB-alan-medium`) | CPU |
+
+On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answer in about **6 seconds from a cold start**, including loading all three models.
+
+### Design notes
+
+**It starts speaking before the model finishes thinking.** The model's reply streams in token by token. A [`SentenceBuffer`](legion/text.py) releases each sentence the moment it's complete, and a background [`SpeechQueue`](legion/audio.py) thread synthesizes and plays them in order — so the first sentence is already being spoken while later ones are still being generated, and text keeps printing during playback. Very short fragments ("Yes.", "Dr.") are merged forward so the audio doesn't sound choppy.
+
+**It's genuinely offline.** Models load from the local cache first and only hit the network when something is actually missing. This is verified by running the full pipeline with the Hugging Face endpoint pointed at a dead port.
+
+**Replies are cleaned before they're spoken.** Language models love markdown. [`clean_for_speech`](legion/text.py) strips emphasis, headings, list markers, links, and emoji, so the voice never reads out "asterisk asterisk".
+
+**Silence doesn't produce phantom words.** Whisper tends to invent text when fed pure silence, so voice activity detection trims it before transcription.
+
+**The prompt is short on purpose.** Small models follow brief instructions far better than long ones. An early version told the model to decline questions needing *current* information, and the 3B model overgeneralized that into refusing to name the capital of Australia. The [persona](legion/persona.py) now draws that line explicitly: answer general knowledge, decline only live data like weather or news.
 
 ## Setup
 
-1. On claude.ai, create a new Project called **Legion**
-2. Open **Set project instructions**
-3. Paste in the entire contents of [`legion-project-instructions.md`](legion-project-instructions.md)
+Requires macOS, Linux, or Windows with Python 3.11+. The commands below are for macOS with [Homebrew](https://brew.sh).
 
-That's it. Every chat started inside that Project is Legion; every chat outside it is ordinary Claude.
+```bash
+brew install ollama uv
+brew services start ollama
+ollama pull llama3.2:3b
 
-Projects are available on every surface, including the iOS app, so this works from the phone.
+git clone https://github.com/mithransadasivam/legion.git
+cd legion
+uv sync
+```
 
-## Why a Project rather than the alternatives
+The first run downloads the speech recognition model (~145 MB) and the voice (~60 MB). After that, everything runs offline.
 
-| Where the instructions could live | Reach | Verdict |
+## Usage
+
+```bash
+uv run legion                     # talk: Enter to start recording, Enter to stop
+uv run legion --mic MacBook       # pick a specific microphone
+uv run legion --text              # type instead of talking; replies are still spoken
+uv run legion --text --quiet      # plain text chat, no audio at all
+uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
+```
+
+On the first voice run, macOS will ask for permission for your terminal to use the microphone.
+
+**Check the microphone line at startup.** If your machine has several audio inputs — a virtual audio driver, a Teams device, an external display — the system default may not be the mic you're speaking into. Legion prints the device it's using; list all of them with `uv run python -m sounddevice`, then choose one by name or number with `--mic`.
+
+### Using a more powerful machine for the model
+
+The model is by far the heaviest stage, and Ollama can serve it over your local network. On a machine with a GPU:
+
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+ollama pull llama3.1:8b
+```
+
+Then point Legion at it:
+
+```bash
+uv run legion --host http://192.168.1.50:11434 --model llama3.1:8b
+```
+
+Speech recognition and synthesis stay local, so only text crosses the network. Only expose Ollama like this on a network you trust — it has no authentication.
+
+### Configuration
+
+Every option can also be set with an environment variable.
+
+| Flag | Environment variable | Default |
 |---|---|---|
-| Account-level "Instructions for Claude" | Every conversation, everywhere | Too broad — turns *all* of Claude into Legion |
-| Inside a Skill | Only when that skill's description matches | Too implicit — Legion appears unpredictably, based on topic |
-| **Project instructions** | Every chat inside that Project | **Right.** Enter the Project to summon it; leave to dismiss it |
+| `--model` | `LEGION_MODEL` | `llama3.2:3b` |
+| `--host` | `LEGION_OLLAMA_HOST` | `http://127.0.0.1:11434` |
+| `--whisper` | `LEGION_WHISPER_MODEL` | `base.en` |
+| `--voice` | `LEGION_VOICE` | `en_GB-alan-medium` |
+| `--mic` | `LEGION_MIC` | system default input |
 
-## Voice
+Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
-Claude has a real **Voice mode** (beta) on iOS, Android, desktop, and web — a two-way spoken conversation, not just dictation. It speaks answers aloud, web search works inside it, it's on every plan, and there are no voice-specific usage limits.
+## Tests
 
-So Legion talks. Just not in Legion's voice.
+```bash
+uv run pytest                              # unit tests
+LEGION_INTEGRATION=1 uv run pytest         # also runs the audio round trip
+```
 
-You pick from a handful of preset voices (reported as Buttery, Airy, Mellow, Glassy, Rounded). **Custom and cloned voices are impossible by design** — Anthropic restricts the voice list specifically to prevent cloning and impersonation. That's a policy decision rather than a missing feature, so the real Titanfall voice is permanently off the table.
+The integration test synthesizes a sentence with Piper, transcribes it back with Whisper, and checks the words survive the trip. It's opt-in because it downloads both speech models.
 
-Rough edges: voice mode is turn-based rather than full-duplex and can cut in during a pause (push-to-talk fixes that). Not every result renders on screen mid-call.
+## Project layout
 
-*(The documented warning that voice mode "cannot reference the projects and skills you have set up" is scoped to Claude **Cowork** — it doesn't apply to regular Projects.)*
+```
+legion/
+├── app.py       CLI and the main conversation loops
+├── brain.py     Streams replies from Ollama and keeps recent conversation history
+├── stt.py       Speech recognition (faster-whisper)
+├── tts.py       Speech synthesis (Piper)
+├── audio.py     Microphone capture and the background speech queue
+├── text.py      Sentence buffering and cleanup for speech
+└── persona.py   Legion's personality
+tests/
+claude-project/  An earlier, no-code version of Legion (see below)
+```
 
-## skills/ — built, not currently deployed
+## Limitations
 
-`skills/research-assistant/` holds the same research method packaged as an account-level Skill. It isn't in use: Skills are account-wide and fire whenever their description matches, which would make Legion turn up outside its Project — the opposite of the design above.
+- **A 3B model is not Claude or GPT.** It's good at conversation and general knowledge and noticeably weaker at nuanced reasoning. Pointing `--host` at a bigger model on a GPU machine helps a lot.
+- **No live information yet.** It can't check the news, weather, or anything else happening right now.
+- **Push-to-talk, not a wake word.** You press Enter to talk.
+- Conversation history lasts for the session only.
 
-It's kept because Skills are the modular path if Legion ever grows several distinct capabilities. For a single capability, Project instructions are simpler and better contained.
+## Roadmap
 
-## Why not Claude Code skills
+- [ ] Wake word ("Hey Legion") via openWakeWord, for hands-free use
+- [ ] Web search, so it can answer questions about current events
+- [ ] Memory that persists between sessions
+- [ ] A custom Piper voice
 
-The original plan used Claude Code skills reached from the phone via Remote Control. That was dropped: Remote Control only attaches to an already-running local `claude` process and dies when that process exits, which requires an always-on home-base machine. There isn't one — the Mac is a laptop that travels and the gaming PC isn't left running.
+## claude-project/
 
-claude.ai runs on Anthropic's infrastructure instead, so no machine of mine is in the loop.
-
-Claude Code is still the right tool when the laptop is open and the work touches local repos. It just isn't the foundation.
-
-## docs/
-
-`planning-summary-original.md` — the original planning notes, kept as background. Reflects the earlier Remote Control architecture and predates the rename from Jarvis. Superseded by this README.
+Before this was code, Legion was a set of instructions for a [claude.ai Project](https://support.claude.com/en/articles/9517075-what-are-projects) — a deep-research persona you use in the Claude app. To set it up, create a Project on claude.ai, open **Set project instructions**, and paste in [`claude-project/legion-project-instructions.md`](claude-project/legion-project-instructions.md). `docs/` holds the original planning notes.
