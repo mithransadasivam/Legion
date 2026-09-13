@@ -38,6 +38,8 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **It starts speaking before the model finishes thinking.** The model's reply streams in token by token. A [`SentenceBuffer`](legion/text.py) releases each sentence the moment it's complete, and a background [`SpeechQueue`](legion/audio.py) thread synthesizes and plays them in order — so the first sentence is already being spoken while later ones are still being generated, and text keeps printing during playback. Very short fragments ("Yes.", "Dr.") are merged forward so the audio doesn't sound choppy.
 
+**You can cut it off.** Audio plays in 0.1-second blocks, so pressing Enter while Legion is talking stops it mid-sentence, drops the rest of the reply, and starts listening. This also fixes a subtle bug in the first version: the reply finishes *printing* long before it finishes *speaking*, so it was natural to press Enter early. The terminal held on to that keypress and handed it to the next prompt, which quietly started a recording and left every later press one step out of phase — "start talking" stopped the recording and "stop" started it. Keys pressed at the wrong moment are now either treated as a cut-in or discarded. The fix is covered by unit tests with a fake speaker, and was verified end to end by driving the real loop through a pseudo-terminal.
+
 **It's genuinely offline.** Models load from the local cache first and only hit the network when something is actually missing. This is verified by running the full pipeline with the Hugging Face endpoint pointed at a dead port.
 
 **Replies are cleaned before they're spoken.** Language models love markdown. [`clean_for_speech`](legion/text.py) strips emphasis, headings, list markers, links, and emoji, so the voice never reads out "asterisk asterisk".
@@ -65,7 +67,7 @@ The first run downloads the speech recognition model (~145 MB) and the voice (~6
 ## Usage
 
 ```bash
-uv run legion                     # talk: Enter to start recording, Enter to stop
+uv run legion                     # talk: Enter to start recording, Enter to stop, Enter while it's talking to cut in
 uv run legion --mic MacBook       # pick a specific microphone
 uv run legion --text              # type instead of talking; replies are still spoken
 uv run legion --text --quiet      # plain text chat, no audio at all
@@ -124,7 +126,8 @@ legion/
 ├── brain.py     Streams replies from Ollama and keeps recent conversation history
 ├── stt.py       Speech recognition (faster-whisper)
 ├── tts.py       Speech synthesis (Piper)
-├── audio.py     Microphone capture and the background speech queue
+├── audio.py     Microphone capture and the interruptible background speech queue
+├── keys.py      Non-blocking Enter detection, for cutting in mid-reply
 ├── text.py      Sentence buffering and cleanup for speech
 └── persona.py   Legion's personality
 tests/

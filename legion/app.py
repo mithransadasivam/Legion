@@ -90,26 +90,49 @@ def _text_loop(brain: Brain, speech: SpeechQueue | None) -> None:
         text = input("\nYou: ").strip()
         if text:
             _respond(brain, text, speech)
+            if speech:
+                speech.wait()
 
 
 def _voice_loop(args: argparse.Namespace, brain: Brain) -> None:
     from legion.audio import microphone_name, record_until_enter
+    from legion.keys import discard_pending_keys
     from legion.stt import SAMPLE_RATE, Transcriber
 
     print(f"Microphone: {microphone_name(args.mic, SAMPLE_RATE)}")
     speech = None if args.quiet else _start_speech(args.voice)
     print("Loading speech recognition...", flush=True)
     transcriber = Transcriber(args.whisper)
-    print("Legion is online. Press Enter to talk, Enter again to stop. Ctrl+C to quit.")
+    print("Legion is online. Press Enter to talk, Enter again to stop.")
+    print("Press Enter while Legion is talking to cut in. Ctrl+C to quit.")
+    cut_in = False
     while True:
-        input("\n[Enter] to talk ")
+        if not cut_in:
+            discard_pending_keys()
+            input("\n[Enter] to talk ")
+        discard_pending_keys()
         print("● Listening... [Enter] to stop", flush=True)
         text = transcriber.transcribe(record_until_enter(SAMPLE_RATE, args.mic))
         if not text:
             print("(Didn't catch that.)")
+            cut_in = False
             continue
         print(f"You: {text}")
         _respond(brain, text, speech)
+        cut_in = speech is not None and _wait_unless_cut_in(speech)
+
+
+def _wait_unless_cut_in(speech: SpeechQueue) -> bool:
+    """Let Legion finish talking, unless the user presses Enter first. Returns True if they cut in."""
+    from legion.keys import enter_pressed
+
+    while not speech.wait(timeout=0.05):
+        if enter_pressed():
+            speech.interrupt()
+            speech.wait()
+            print("\n(Cut in.)")
+            return True
+    return False
 
 
 def _answer_recording(args: argparse.Namespace, brain: Brain) -> int:
@@ -128,12 +151,15 @@ def _answer_recording(args: argparse.Namespace, brain: Brain) -> int:
         Synthesizer(args.voice).save_wav(clean_for_speech(reply), args.save)
         print(f"Reply saved to {args.save}")
     else:
-        _respond(brain, question, None if args.quiet else _start_speech(args.voice))
+        speech = None if args.quiet else _start_speech(args.voice)
+        _respond(brain, question, speech)
+        if speech:
+            speech.wait()
     return 0
 
 
 def _respond(brain: Brain, text: str, speech: SpeechQueue | None) -> str:
-    """Print the reply as it streams, speaking each sentence as soon as it's complete."""
+    """Print the reply as it streams and queue each sentence for speech; returns before speech finishes."""
     print("Legion: ", end="", flush=True)
     sentences = SentenceBuffer()
     reply: list[str] = []
@@ -147,5 +173,4 @@ def _respond(brain: Brain, text: str, speech: SpeechQueue | None) -> str:
     if speech:
         for sentence in sentences.flush():
             speech.say(clean_for_speech(sentence))
-        speech.wait()
     return "".join(reply)
