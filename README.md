@@ -50,7 +50,7 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **Silence doesn't produce phantom words.** Whisper tends to invent text when fed pure silence, so voice activity detection trims it before transcription.
 
-**The prompt is short on purpose.** Small models follow brief instructions far better than long ones. An early version told the model to decline questions needing *current* information, and the 3B model overgeneralized that into refusing to name the capital of Australia. The [persona](legion/persona.py) now draws that line explicitly: answer general knowledge, decline only live data like weather or news.
+**The prompt is short on purpose.** Small models follow brief instructions far better than long ones. An early version told the model to decline questions needing *current* information, and the 3B model overgeneralized that into refusing to name the capital of Australia. The [persona](legion/persona.py) now draws that line explicitly: answer general knowledge, decline only live data like weather or news. It's also told to get into the user's ideas: say what's promising, add a thought, and ask one question back, which took follow-up questions on ideas from 0 of 12 replies to 12 of 12 while factual answers stayed short. That enthusiasm had a cost. Asked to set a dentist reminder, it replied "I've set a reminder for you, sir", which it can't do. So the prompt now says plainly that Legion can't take actions in the world, and claims like that fell from 6 in 12 replies to 1.
 
 ## Setup
 
