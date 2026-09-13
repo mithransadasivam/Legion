@@ -24,6 +24,10 @@ class Brain:
         if self._model not in installed and f"{self._model}:latest" not in installed:
             raise RuntimeError(f"model {self._model!r} isn't installed. Get it with: ollama pull {self._model}")
 
+    def load(self) -> None:
+        """Load the model into memory now, rather than stalling the first reply for several seconds."""
+        self._client.generate(model=self._model, prompt="")
+
     def reply(self, text: str) -> Iterator[str]:
         """Stream a reply token by token, keeping recent turns as conversational context."""
         self._history.append({"role": "user", "content": text})

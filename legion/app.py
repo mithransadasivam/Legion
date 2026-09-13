@@ -20,6 +20,8 @@ def main(argv: list[str] | None = None) -> int:
     brain = Brain(model=args.model, host=args.host)
     try:
         brain.check()
+        print("Loading model...", flush=True)
+        brain.load()
         if args.ask:
             return _answer_recording(args, brain)
         if args.text:
@@ -124,8 +126,10 @@ def _voice_loop(args: argparse.Namespace, brain: Brain) -> None:
 
 def _wait_unless_cut_in(speech: SpeechQueue) -> bool:
     """Let Legion finish talking, unless the user presses Enter first. Returns True if they cut in."""
-    from legion.keys import enter_pressed
+    from legion.keys import discard_pending_keys, enter_pressed
 
+    # A press made while the model was still thinking would silence Legion before it said a word.
+    discard_pending_keys()
     while not speech.wait(timeout=0.05):
         if enter_pressed():
             speech.interrupt()
