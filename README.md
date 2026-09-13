@@ -42,6 +42,8 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **It's genuinely offline.** Models load from the local cache first and only hit the network when something is actually missing. This is verified by running the full pipeline with the Hugging Face endpoint pointed at a dead port.
 
+**It looks things up, but only when it has to.** Questions about live information — today's weather, the latest news, current prices, who won last night — are answered from a [DuckDuckGo](https://pypi.org/project/ddgs/) search, free and keyless. Deciding *when* to search is deliberately not the model's job: offered a search tool, llama3.2:3b reached for it even for "the capital of Australia", which would put a network round trip in front of every reply. A [plain text gate](legion/search.py) decides instead, so ordinary questions cost 0.00 s and never touch the network, while a search adds about 3 s. Run with `--no-search` to stay strictly offline.
+
 **Replies are cleaned before they're spoken.** Language models love markdown. [`clean_for_speech`](legion/text.py) strips emphasis, headings, list markers, links, and emoji, so the voice never reads out "asterisk asterisk".
 
 **Silence doesn't produce phantom words.** Whisper tends to invent text when fed pure silence, so voice activity detection trims it before transcription.
@@ -71,6 +73,7 @@ uv run legion                     # talk: Enter to start recording, Enter to sto
 uv run legion --mic MacBook       # pick a specific microphone
 uv run legion --text              # type instead of talking; replies are still spoken
 uv run legion --text --quiet      # plain text chat, no audio at all
+uv run legion --no-search         # never look anything up, even for live information
 uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
 ```
 
@@ -106,6 +109,7 @@ Every option can also be set with an environment variable.
 | `--whisper` | `LEGION_WHISPER_MODEL` | `base.en` |
 | `--voice` | `LEGION_VOICE` | `en_GB-alan-medium` |
 | `--mic` | `LEGION_MIC` | system default input |
+| `--no-search` | `LEGION_SEARCH=0` | search enabled |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 

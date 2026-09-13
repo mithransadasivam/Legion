@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from legion.brain import Brain
+from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
 
 if TYPE_CHECKING:
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    brain = Brain(model=args.model, host=args.host)
+    brain = Brain(model=args.model, host=args.host, lookup=None if args.no_search else lookup)
     try:
         brain.check()
         print("Loading model...", flush=True)
@@ -69,6 +70,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     mode.add_argument("--ask", type=Path, metavar="WAV", help="answer a recorded question, then exit")
     parser.add_argument("--save", type=Path, metavar="WAV", help="with --ask: write the spoken reply to a file")
     parser.add_argument("--quiet", action="store_true", help="print replies without speaking them")
+    parser.add_argument(
+        "--no-search",
+        action="store_true",
+        default=os.environ.get("LEGION_SEARCH", "1") == "0",
+        help="stay fully offline: never look anything up, even for questions about live information",
+    )
 
     args = parser.parse_args(argv)
     if args.save and not args.ask:
