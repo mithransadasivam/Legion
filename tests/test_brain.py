@@ -4,6 +4,7 @@ import pytest
 
 from legion import brain as brain_module
 from legion.brain import Brain
+from legion.search import NOT_CHECKED, WebCheck
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def drain(brain: Brain, text: str) -> str:
 
 
 def test_web_results_are_handed_to_the_model_with_the_question(sent):
-    brain = Brain(model="m", host="h", lookup=lambda text: "- Forecast: Hot and dry.")
+    brain = Brain(model="m", host="h", lookup=lambda text: WebCheck("- Forecast (accuweather.com): Hot and dry.", "checked accuweather.com"))
 
     assert drain(brain, "What's the weather today?") == "Right away, sir."
     roles = [message["role"] for message in sent[0]]
@@ -37,26 +38,28 @@ def test_web_results_are_handed_to_the_model_with_the_question(sent):
     assert "Hot and dry." in sent[0][1]["content"]
 
 
-def test_results_are_not_kept_in_the_conversation_history(sent):
-    lookups = iter(["- Forecast: Hot and dry.", ""])
-    brain = Brain(model="m", host="h", lookup=lambda text: next(lookups))
+def test_results_are_not_kept_but_the_fact_of_checking_the_web_is(sent):
+    checks = iter([WebCheck("- Forecast (accuweather.com): Hot and dry.", "You checked the web to answer that, using accuweather.com."), NOT_CHECKED])
+    brain = Brain(model="m", host="h", lookup=lambda text: next(checks))
 
     drain(brain, "What's the weather today?")
-    drain(brain, "And what did I just ask?")
+    drain(brain, "Where did you get that from?")
 
-    second = sent[1]
-    assert not any("Hot and dry." in message["content"] for message in second), (
+    follow_up = sent[1]
+    assert not any("Hot and dry." in message["content"] for message in follow_up), (
         "stale results should not follow the conversation around"
     )
-    assert [message["role"] for message in second] == ["system", "user", "assistant", "user"]
+    assert [message["role"] for message in follow_up] == ["system", "user", "system", "assistant", "user"]
+    assert "accuweather.com" in follow_up[2]["content"], "otherwise the model invents where its answer came from"
 
 
-def test_a_search_that_finds_nothing_leaves_the_prompt_alone(sent):
-    brain = Brain(model="m", host="h", lookup=lambda text: "")
+def test_a_question_that_needs_no_search_leaves_the_prompt_and_history_alone(sent):
+    brain = Brain(model="m", host="h", lookup=lambda text: NOT_CHECKED)
 
-    drain(brain, "What's the weather today?")
+    drain(brain, "What is the capital of Australia?")
+    drain(brain, "And of New Zealand?")
 
-    assert [message["role"] for message in sent[0]] == ["system", "user"]
+    assert [message["role"] for message in sent[1]] == ["system", "user", "assistant", "user"]
 
 
 def test_without_search_the_model_is_told_it_is_offline(sent):
@@ -68,7 +71,7 @@ def test_without_search_the_model_is_told_it_is_offline(sent):
 
 
 def test_with_search_the_model_is_told_results_will_be_supplied(sent):
-    brain = Brain(model="m", host="h", lookup=lambda text: "")
+    brain = Brain(model="m", host="h", lookup=lambda text: NOT_CHECKED)
 
     drain(brain, "Anything at all")
 

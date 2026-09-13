@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 import ollama
 
 from legion.persona import SEARCH_SYSTEM_PROMPT, SYSTEM_PROMPT
+from legion.search import NOT_CHECKED, WebCheck
 
 
 class Brain:
@@ -13,7 +14,7 @@ class Brain:
         model: str,
         host: str,
         max_turns: int = 8,
-        lookup: Callable[[str], str] | None = None,
+        lookup: Callable[[str], WebCheck] | None = None,
     ) -> None:
         self._client = ollama.Client(host=host)
         self._model = model
@@ -40,9 +41,9 @@ class Brain:
         """Stream a reply token by token, keeping recent turns as conversational context."""
         self._history.append({"role": "user", "content": text})
         messages = [{"role": "system", "content": self._system_prompt}, *self._history]
-        if results := self._look_up(text):
-            # Kept out of _history: the results answer this question only, and they're bulky.
-            messages.insert(-1, {"role": "system", "content": f"Web results, fetched just now:\n{results}"})
+        web = self._look_up(text)
+        if web.results:
+            messages.insert(-1, {"role": "system", "content": web.results})
         parts: list[str] = []
         try:
             for chunk in self._client.chat(model=self._model, messages=messages, stream=True):
@@ -50,8 +51,10 @@ class Brain:
                     parts.append(token)
                     yield token
         finally:
+            if web.record:
+                self._history.append({"role": "system", "content": web.record})
             self._history.append({"role": "assistant", "content": "".join(parts)})
             del self._history[: -self._max_messages]
 
-    def _look_up(self, text: str) -> str:
-        return self._lookup(text) if self._lookup else ""
+    def _look_up(self, text: str) -> WebCheck:
+        return self._lookup(text) if self._lookup else NOT_CHECKED

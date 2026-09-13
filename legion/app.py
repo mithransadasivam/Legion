@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,7 +19,8 @@ if TYPE_CHECKING:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    brain = Brain(model=args.model, host=args.host, lookup=None if args.no_search else lookup)
+    web = None if args.no_search else partial(lookup, announce=_announce_search)
+    brain = Brain(model=args.model, host=args.host, lookup=web)
     try:
         brain.check()
         print("Loading model...", flush=True)
@@ -35,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     except (KeyboardInterrupt, EOFError):
         print("\nStanding down.")
     return 0
+
+
+def _announce_search() -> None:
+    # Printed, never spoken: it explains the pause, and shows which answers came from the web.
+    print("(checking the web) ", end="", flush=True)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
