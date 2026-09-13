@@ -77,3 +77,25 @@ def test_with_search_the_model_is_told_results_will_be_supplied(sent):
 
     assert "You run offline" not in sent[0][0]["content"]
     assert "web results are supplied" in sent[0][0]["content"]
+
+
+def test_a_fact_told_just_now_is_in_the_prompt_for_this_very_reply(sent, tmp_path, monkeypatch):
+    from legion import memory as memory_module
+
+    class NoteTaker:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def chat(self, model, messages, options):
+            return SimpleNamespace(message=SimpleNamespace(content="The user's name is Mithran."))
+
+    # Brain and Memory share the one ollama module, so each gets its own stub in turn.
+    chat_stub = memory_module.ollama.Client
+    monkeypatch.setattr(memory_module.ollama, "Client", NoteTaker)
+    memory = memory_module.Memory(tmp_path / "memory.txt", host="h", model="m")
+    monkeypatch.setattr(memory_module.ollama, "Client", chat_stub)
+    brain = Brain(model="m", host="h", memory=memory)
+
+    drain(brain, "My name is Mithran.")
+
+    assert "The user's name is Mithran." in sent[0][0]["content"]

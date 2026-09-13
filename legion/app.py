@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from legion.brain import Brain
+from legion.memory import DEFAULT_FILE, Memory
 from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
 
@@ -20,11 +21,14 @@ if TYPE_CHECKING:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     web = None if args.no_search else partial(lookup, announce=_announce_search)
-    brain = Brain(model=args.model, host=args.host, lookup=web)
     try:
+        memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
+        brain = Brain(model=args.model, host=args.host, lookup=web, memory=memory)
         brain.check()
         print("Loading model...", flush=True)
         brain.load()
+        if memory:
+            print(f"Memory: {len(memory.notes)} notes in {args.memory}")
         if args.ask:
             return _answer_recording(args, brain)
         if args.text:
@@ -42,6 +46,11 @@ def main(argv: list[str] | None = None) -> int:
 def _announce_search() -> None:
     # Printed, never spoken: it explains the pause, and shows which answers came from the web.
     print("(checking the web) ", end="", flush=True)
+
+
+def _announce_notes(notes: list[str]) -> None:
+    # Printed, never spoken, so it's always clear what Legion is keeping about you.
+    print(f"(noted: {' '.join(notes)}) ", end="", flush=True)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -82,6 +91,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         default=os.environ.get("LEGION_SEARCH", "1") == "0",
         help="stay fully offline: never look anything up, even for questions about live information",
+    )
+    parser.add_argument(
+        "--memory",
+        type=Path,
+        metavar="FILE",
+        default=Path(os.environ.get("LEGION_MEMORY_FILE", DEFAULT_FILE)),
+        help="where Legion keeps its notes about you (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        default=os.environ.get("LEGION_MEMORY", "1") == "0",
+        help="don't remember anything between sessions, or take new notes",
     )
 
     args = parser.parse_args(argv)

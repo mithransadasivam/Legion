@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 
 import ollama
 
+from legion.memory import Memory
 from legion.persona import SEARCH_SYSTEM_PROMPT, SYSTEM_PROMPT
 from legion.search import NOT_CHECKED, WebCheck
 
@@ -15,6 +16,7 @@ class Brain:
         host: str,
         max_turns: int = 8,
         lookup: Callable[[str], WebCheck] | None = None,
+        memory: Memory | None = None,
     ) -> None:
         self._client = ollama.Client(host=host)
         self._model = model
@@ -23,6 +25,7 @@ class Brain:
         self._max_messages = max_turns * 2
         self._lookup = lookup
         self._system_prompt = SEARCH_SYSTEM_PROMPT if lookup else SYSTEM_PROMPT
+        self._memory = memory
 
     def check(self) -> None:
         """Raise RuntimeError with a fix-it hint if the server or model isn't available."""
@@ -40,7 +43,11 @@ class Brain:
     def reply(self, text: str) -> Iterator[str]:
         """Stream a reply token by token, keeping recent turns as conversational context."""
         self._history.append({"role": "user", "content": text})
-        messages = [{"role": "system", "content": self._system_prompt}, *self._history]
+        if self._memory:
+            # Before replying, so a fact told just now is already known, and taking notes can never
+            # overlap the moment the user might press Enter to cut Legion off.
+            self._memory.learn(text)
+        messages = [{"role": "system", "content": self._prompt()}, *self._history]
         web = self._look_up(text)
         if web.results:
             messages.insert(-1, {"role": "system", "content": web.results})
@@ -55,6 +62,9 @@ class Brain:
                 self._history.append({"role": "system", "content": web.record})
             self._history.append({"role": "assistant", "content": "".join(parts)})
             del self._history[: -self._max_messages]
+
+    def _prompt(self) -> str:
+        return self._system_prompt + (self._memory.prompt() if self._memory else "")
 
     def _look_up(self, text: str) -> WebCheck:
         return self._lookup(text) if self._lookup else NOT_CHECKED
