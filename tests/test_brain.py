@@ -49,8 +49,30 @@ def test_results_are_not_kept_but_the_fact_of_checking_the_web_is(sent):
     assert not any("Hot and dry." in message["content"] for message in follow_up), (
         "stale results should not follow the conversation around"
     )
-    assert [message["role"] for message in follow_up] == ["system", "user", "system", "assistant", "user"]
-    assert "accuweather.com" in follow_up[2]["content"], "otherwise the model invents where its answer came from"
+    assert [message["role"] for message in follow_up] == ["system", "user", "assistant", "system", "user"]
+    assert "accuweather.com" in follow_up[3]["content"], "otherwise the model invents where its answer came from"
+
+
+def test_the_source_record_does_not_outlive_the_one_follow_up_it_is_for(sent):
+    # Left in permanently, the model started citing a source for a later question it never actually
+    # searched, having seen "you checked the web" established by two earlier turns in the conversation.
+    checks = iter(
+        [
+            WebCheck("- Forecast (accuweather.com): Hot.", "You checked the web to answer that, using accuweather.com."),
+            NOT_CHECKED,
+            NOT_CHECKED,
+        ]
+    )
+    brain = Brain(model="m", host="h", lookup=lambda text: next(checks))
+
+    drain(brain, "What's the weather today?")
+    drain(brain, "Where did you get that from?")
+    drain(brain, "What is the capital of Australia?")
+
+    third_turn = sent[2]
+    assert not any("accuweather.com" in message["content"] for message in third_turn), (
+        "an unrelated later question should not be told that earlier answers came from the web"
+    )
 
 
 def test_a_question_that_needs_no_search_leaves_the_prompt_and_history_alone(sent):

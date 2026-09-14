@@ -26,6 +26,7 @@ class Brain:
         self._lookup = lookup
         self._system_prompt = SEARCH_SYSTEM_PROMPT if lookup else SYSTEM_PROMPT
         self._memory = memory
+        self._last_web_record = ""
 
     def check(self) -> None:
         """Raise RuntimeError with a fix-it hint if the server or model isn't available."""
@@ -48,6 +49,12 @@ class Brain:
             # overlap the moment the user might press Enter to cut Legion off.
             self._memory.learn(text)
         messages = [{"role": "system", "content": self._prompt()}, *self._history]
+        if self._last_web_record:
+            # Whether the previous reply came from the web, so "where did you get that?" is answered
+            # honestly. Kept for one turn only: left in permanently, the model started citing sources
+            # for questions it never actually searched, having seen the pattern established earlier
+            # in the same conversation.
+            messages.insert(-1, {"role": "system", "content": self._last_web_record})
         web = self._look_up(text)
         if web.results:
             messages.insert(-1, {"role": "system", "content": web.results})
@@ -58,8 +65,7 @@ class Brain:
                     parts.append(token)
                     yield token
         finally:
-            if web.record:
-                self._history.append({"role": "system", "content": web.record})
+            self._last_web_record = web.record
             self._history.append({"role": "assistant", "content": "".join(parts)})
             del self._history[: -self._max_messages]
 
