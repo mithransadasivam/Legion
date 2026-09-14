@@ -4,6 +4,11 @@ Small models are hopeless at deciding when to search. Offered a search tool, lla
 reaches for it even for "the capital of Australia" — a network round trip in front of every
 reply, and the end of the one property Legion is built on. So a plain text gate decides
 instead, and questions that don't depend on live information never touch the network.
+
+Two things send a question to the web: it depends on live information (weather, news, prices),
+or it's technical enough that the model tends to answer it vaguely, or with an invented detail
+in among the true ones — a Wheatstone bridge's balance condition, a welding hazard. Everyday
+questions the model already answers well, general knowledge included, still cost nothing.
 """
 
 import re
@@ -37,6 +42,41 @@ _NEEDS_LIVE_INFORMATION = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Technical questions the model tends to answer vaguely or with an invented detail: asked why a
+# Wheatstone bridge balances, it never named the actual mechanism; asked about welding a fuel tank,
+# it listed "toxic fumes like methanol" as a hazard, which isn't the real one. Two signals catch
+# these without over-firing on everyday questions the model already answers well: an unambiguous
+# request for a formula or derivation, or an explanatory question paired with domain vocabulary —
+# "why does X work" alone would also catch "why does my dog bark", so it isn't enough by itself.
+_QUANTITATIVE = re.compile(
+    r"""\b(
+        formula\s+for | derive | derivation | equation\s+for |
+        second\s+moment\s+of\s+area | moment\s+of\s+inertia
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_EXPLAIN = re.compile(
+    r"""\b(
+        why\s+(?:does|is|do|are) | what\s+causes | how\s+do(?:es)?\s+.+\s+work |
+        what(?:'s|\s+is)\s+the\s+difference\s+between | is\s+it\s+safe\s+to |
+        how\s+(?:do\s+you|to)\s+calculate
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_ENGINEERING_VOCAB = re.compile(
+    r"""\b(
+        bridge | circuit | voltage | current | resistance | resistor | capacitor | inductor |
+        beam | cantilever | torque | stress | strain | yield | tensile | shear | bending |
+        moment | load | pressure | velocity | acceleration | thermodynamic | efficiency |
+        frequency | wavelength | bandwidth | pump | cavitation | weld(?:ing)? | alloy |
+        corrosion | fatigue | fuel\s+tank | vapor | reaction | molecule | atom | valence |
+        catalyst | gear | bearing | motor | engine | turbine | rpm | horsepower | structural |
+        mechanical | electrical | chemical | aerodynamic | hydraulic | pneumatic |
+        semiconductor | transistor | amplifier
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 class WebCheck(NamedTuple):
     """The outcome of checking the web for one question."""
@@ -54,7 +94,15 @@ def search_query(text: str) -> str | None:
     """What to look up for ``text``, or None when Legion should answer from what it knows."""
     if asked := _ASKED_TO_SEARCH.match(text):
         return asked.group(1).strip()
-    return text.strip() if _NEEDS_LIVE_INFORMATION.search(text) else None
+    if _NEEDS_LIVE_INFORMATION.search(text) or _is_technical(text):
+        return text.strip()
+    return None
+
+
+def _is_technical(text: str) -> bool:
+    if _QUANTITATIVE.search(text):
+        return True
+    return bool(_EXPLAIN.search(text) and _ENGINEERING_VOCAB.search(text))
 
 
 def lookup(text: str, announce: Callable[[], None] | None = None) -> WebCheck:

@@ -45,11 +45,34 @@ class TestSearchQuery:
     @pytest.mark.parametrize(
         "question",
         [
+            # Each of these got a vague or invented answer from llama3.2:3b in testing.
+            "Why does a Wheatstone bridge go to zero output when balanced?",
+            "Is it safe to weld a fuel tank that has been drained but not purged of vapor?",
+            "What is the second moment of area formula for a solid circular cross-section?",
+            "What causes cavitation in a centrifugal pump?",
+            "What's the difference between yield strength and ultimate tensile strength?",
+            "How do you calculate torque from horsepower and RPM?",
+            "Derive the relationship between force and acceleration.",
+            "How does a jet engine work?",
+            "What is the formula for kinetic energy?",
+        ],
+    )
+    def test_technical_questions_the_model_tends_to_get_vague_or_wrong_are_searched(self, question):
+        assert search_query(question) == question
+
+    @pytest.mark.parametrize(
+        "question",
+        [
             "What is the capital of Australia?",
             "Explain how a jet engine works.",
             "What is 17 times 23?",
             "Who wrote Brave New World?",
             "Why is the sky blue?",
+            # "Why does" and "is it safe to" alone would also match these; domain vocabulary is
+            # what keeps everyday questions like these from triggering a needless search.
+            "Why does my dog bark at the mailman?",
+            "Is it safe to eat raw cookie dough?",
+            "What's the difference between a crocodile and an alligator?",
         ],
     )
     def test_general_knowledge_never_touches_the_network(self, question):
