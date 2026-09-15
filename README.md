@@ -54,9 +54,11 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **It can listen for a wake word instead of a key press.** `--wake` uses [openWakeWord](https://github.com/dscripka/openWakeWord)'s ready-made "hey jarvis" model to start listening on its own, and [Silero](https://github.com/snakers4/silero-vad)'s voice activity detector — bundled with it — ends the recording once you stop talking, instead of waiting for a second Enter. A custom phrase such as "hey legion" is a single `.onnx` file, trained with openWakeWord's own notebook and passed as `--wake-model` in place of the built-in name. Verified end to end with synthesized speech: the wake word fires and captures the command that follows it, ordinary speech without it never wakes Legion, and saying the wake word and the question in one breath still works. There's no cut-in yet in this mode — interrupting would mean listening for the wake word again while Legion is still talking, which needs a second mic stream open during playback.
 
-**It doesn't make you repeat the wake word for a follow-up.** In `--gui`, right after a voice-originated reply finishes, Legion listens again with no wake word needed — [`Endpointer`](legion/wake.py)'s own silence timeout, given a little longer than usual, is what ends that window if you don't say anything. A question typed into the box doesn't trigger this; only a spoken one does, since typing is already a deliberate act. Verified with synthesized speech end to end: a second question, asked with no wake word at all, is captured and transcribed correctly right after the first.
+**`--gui` listens for a greeting instead of one trained phrase.** A trained wake word takes a real (if free) time investment to set up, so `--gui` doesn't use one: anyone starting to speak is recorded — no keyword needed, just [Silero](https://github.com/snakers4/silero-vad)'s voice activity detector deciding when they've stopped — and transcribed, and [`legion/greeting.py`](legion/greeting.py) checks afterwards whether the words it heard open with a greeting ("hey", "hi", "hello", "yo", "legion", or a time-of-day greeting) before anything reaches the model. The honest trade-off: those are common words, so something said to someone else in the room that happens to start with one of them can still get through — a trained phrase like "hey jarvis" rejects look-alikes far better. Verified end to end with synthesized speech: a real greeting is captured and correctly recognized, and ordinary speech with no greeting in it is still captured by the VAD but correctly discarded afterward. `--wake` (the terminal, not `--gui`) still uses a trained openWakeWord model instead, ready-made as "hey jarvis" or a custom `.onnx` trained with openWakeWord's own free notebook.
 
-**It can show what it's doing instead of just printing it.** `--gui` opens a small window — a tactical HUD around a living core, styled after JARVIS's own on-screen presence in the films — instead of running in the terminal. The core's motion and the amplitude bars beside it are driven by the real microphone and speaker levels, not a canned animation, and the readout shows what Legion heard and what it's saying as it says it. It's built as one static HTML/JS file in [`legion/hud/`](legion/hud/index.html), shown in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows), and driven from Python by [`Hud`](legion/gui.py) calling straight into the page's own `setState`/`setLevel`/`setReadout` functions — no server, no build step, no second language. `--gui` runs hands-free by default: say the wake word *or* type into the window's own command line, whichever's easier at the time — both land on the same queue, so either one gets a real reply. A background watcher re-detects the microphone every couple of seconds, so reconnecting a headset partway through a session picks it back up without restarting Legion; verified against a fake device table whose headset gets a *different* device number on reconnect, the way Windows actually behaves, and separately against the real one connected while testing. Point `--mic` at a name rather than a number for that to survive a reconnect — a number is only ever tried as-is, and Windows can hand a reconnected device a new one. `--gui --text` skips the microphone and the wake word entirely: lighter to start, and useful when there's never going to be a headset. Either way, the terminal is only for launching Legion — typing into the window calls straight back into Python through pywebview's `js_api`, landing on a queue [`Hud.wait_for_input`](legion/gui.py) blocks on.
+**It doesn't make you repeat the greeting for a follow-up.** In `--gui`, right after a voice-originated reply finishes, Legion listens again with nothing needed to open with — [`Endpointer`](legion/wake.py)'s own silence timeout, given a little longer than usual, is what ends that window if you don't say anything. Saying just "Legion" with nothing after it behaves the same way: recognized as addressed to Legion, but with no question in it yet, so the next thing you say doesn't need a greeting either. A question typed into the box doesn't open this window; only a spoken one does, since typing is already a deliberate act. Verified with synthesized speech end to end: a second question, asked with nothing said to open it, is captured and transcribed correctly right after the first.
+
+**It can show what it's doing instead of just printing it.** `--gui` opens a small window — a tactical HUD around a living core, styled after JARVIS's own on-screen presence in the films — instead of running in the terminal. The core's motion and the amplitude bars beside it are driven by the real microphone and speaker levels, not a canned animation, and the readout shows what Legion heard and what it's saying as it says it. It's built as one static HTML/JS file in [`legion/hud/`](legion/hud/index.html), shown in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows), and driven from Python by [`Hud`](legion/gui.py) calling straight into the page's own `setState`/`setLevel`/`setReadout` functions — no server, no build step, no second language. `--gui` runs hands-free by default: greet it *or* type into the window's own command line, whichever's easier at the time — both land on the same queue, so either one gets a real reply. A background watcher re-detects the microphone every couple of seconds, so reconnecting a headset partway through a session picks it back up without restarting Legion; verified against a fake device table whose headset gets a *different* device number on reconnect, the way Windows actually behaves, and separately against the real one connected while testing. Point `--mic` at a name rather than a number for that to survive a reconnect — a number is only ever tried as-is, and Windows can hand a reconnected device a new one. `--gui --text` skips the microphone entirely: lighter to start, and useful when there's never going to be a headset. Either way, the terminal is only for launching Legion — typing into the window calls straight back into Python through pywebview's `js_api`, landing on a queue [`Hud.wait_for_input`](legion/gui.py) blocks on.
 
 ## Setup
 
@@ -84,7 +86,7 @@ uv run legion --text --quiet      # plain text chat, no audio at all
 uv run legion --no-search         # never look anything up, even for live information
 uv run legion --no-memory         # don't remember anything between sessions
 uv run legion --wake              # hands-free: say "hey jarvis" to talk, instead of pressing Enter
-uv run legion --gui               # a HUD window; say the wake word or type, and reconnects are detected
+uv run legion --gui               # a HUD window; greet it or type, and reconnects are detected
 uv run legion --gui --mic XM4     # same, but pointed at a mic by name, so a reconnect survives
 uv run legion --gui --text        # the HUD window, no microphone loaded at all
 uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
@@ -126,9 +128,9 @@ Every option can also be set with an environment variable.
 | `--memory` | `LEGION_MEMORY_FILE` | `~/.legion/memory.txt` |
 | `--no-memory` | `LEGION_MEMORY=0` | memory enabled |
 | `--wake` | `LEGION_WAKE=1` | off (push-to-talk) |
-| `--wake-model` | `LEGION_WAKE_MODEL` | `hey_jarvis` |
-| `--wake-threshold` | `LEGION_WAKE_THRESHOLD` | `0.5` |
-| `--gui` | `LEGION_GUI=1` | off (terminal) |
+| `--wake-model` | `LEGION_WAKE_MODEL` | `hey_jarvis` (only affects `--wake`, not `--gui`) |
+| `--wake-threshold` | `LEGION_WAKE_THRESHOLD` | `0.5` (only affects `--wake`, not `--gui`) |
+| `--gui` | `LEGION_GUI=1` | off (terminal); always greeting-based, not `--wake-model` |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
@@ -136,7 +138,7 @@ Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper
 
 ```bash
 uv run pytest                              # unit tests
-LEGION_INTEGRATION=1 uv run pytest         # also runs the audio, wake word, and GUI round trips
+LEGION_INTEGRATION=1 uv run pytest         # also runs the audio, wake word, greeting, and GUI round trips
 ```
 
 The audio integration test synthesizes a sentence with Piper and transcribes it back with Whisper. The wake word one does the same, then checks the wake word actually fires, and that unrelated speech never triggers it. The GUI one runs a real question through wake detection, transcription, and a real Ollama reply, and checks the result lands on the HUD in order. All three are opt-in: they download models, and the GUI one also needs Ollama running.
@@ -150,7 +152,8 @@ legion/
 ├── stt.py       Speech recognition (faster-whisper)
 ├── tts.py       Speech synthesis (Piper)
 ├── audio.py     Microphone capture and the interruptible background speech queue
-├── wake.py      Wake word detection and end-of-speech detection (openWakeWord, Silero VAD)
+├── wake.py      Trained wake word detection and end-of-speech detection (openWakeWord, Silero VAD)
+├── greeting.py  Decides whether a transcription was addressed to Legion, for --gui's greeting mode
 ├── gui.py       Drives the HUD window from Python
 ├── hud/         The HUD itself: one static HTML/CSS/JS file, shown by pywebview
 ├── search.py    Decides when to check the web, and formats what comes back

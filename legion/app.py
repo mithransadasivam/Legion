@@ -17,6 +17,8 @@ from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import numpy as np
 
     from legion.audio import SpeechQueue
@@ -230,14 +232,15 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
     """The conversation shown in a HUD window instead of the terminal.
 
     With --text, the window's own input box is the only way in: no microphone is ever touched.
-    Otherwise both the wake word and the input box work at once -- say "hey jarvis" or type,
-    whichever's easier at the time -- and a background watcher re-detects the microphone every
-    couple of seconds, so reconnecting a headset partway through a session picks it back up
-    without restarting Legion. Point --mic at a name rather than a number for that to survive a
-    reconnect: Windows can hand a reconnected device a new number, but its name doesn't change.
+    Otherwise both a spoken greeting and the input box work at once -- say "hey", "hi", "legion",
+    a time-of-day greeting, or type, whichever's easier at the time (see legion/greeting.py for
+    the full list and why a trained wake word isn't used here) -- and a background watcher
+    re-detects the microphone every couple of seconds, so reconnecting a headset partway through a
+    session picks it back up without restarting Legion. Point --mic at a name rather than a number
+    for that to survive a reconnect: Windows can hand a reconnected device a new number, but its
+    name doesn't change.
 
-    No cut-in yet: interrupting Legion mid-reply isn't supported from either the wake word or the
-    box.
+    No cut-in yet: interrupting Legion mid-reply isn't supported from either voice or the box.
     """
     from legion.audio import SpeechQueue
     from legion.gui import run
@@ -259,22 +262,22 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
         from legion.wake import WakeWord
 
         # These don't need a microphone to exist yet -- only actually listening does, and that's
-        # handled by _voice_watcher, which tolerates one not being connected at all.
+        # handled by _voice_watcher, which tolerates one not being connected at all. model=None:
+        # no trained wake word, just the voice activity detector openWakeWord ships alongside one.
         print("Loading speech recognition...", flush=True)
         transcriber = Transcriber(args.whisper)
-        print("Loading wake word...", flush=True)
-        wake = WakeWord(args.wake_model, args.wake_threshold)
-        print(f'Opening the Legion window. Say "{wake.phrase}" or type; close the window to quit.')
+        wake = WakeWord(model=None)
+        print('Opening the Legion window. Greet it ("hey", "hi", "legion", ...) or type; close the window to quit.')
 
     def worker(hud: Hud) -> None:
         global _active_hud
         _active_hud = hud
         speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
-        hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase=wake.phrase if wake else "(typing only)")
+        hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase="a greeting" if wake else "(typing only)")
 
         busy = threading.Event()
-        # Set by this loop right after a voice-originated reply finishes, so the watcher's next
-        # listen skips straight to capture -- a follow-up shouldn't need the wake word repeated.
+        # Set right after a voice-originated reply finishes, so the watcher's next listen skips
+        # straight to capture -- a follow-up shouldn't need a greeting repeated.
         follow_up = threading.Event()
         if wake:
             threading.Thread(target=_voice_watcher, args=(args.mic, wake, transcriber, hud, busy, follow_up), daemon=True).start()
@@ -286,7 +289,7 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
                 hud.set_state("idle")
                 hud.set_readout(
                     "STANDBY",
-                    f'Say "{wake.phrase}" or type above.' if wake else "Type your question above, then press Enter.",
+                    'Say "hey", "hi", "legion" (or type above).' if wake else "Type your question above, then press Enter.",
                 )
                 heard = hud.wait_for_input()
                 if not heard:
@@ -312,6 +315,23 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
 
 _MIC_POLL_SECONDS = 2.0
 _FOLLOW_UP_SECONDS = 6.0
+_SPEECH_LEVEL_THRESHOLD = 0.08
+
+
+def _speech_reactive(hud: Hud) -> Callable[[float], None]:
+    """Wraps hud.set_level so the HUD only shows "listening" once actual speech is heard, not the
+    instant a capture cycle starts -- with no wake word, a cycle begins on a plain timer, and
+    flashing the state every empty poll would just be visual noise."""
+    woken = False
+
+    def on_level(level: float) -> None:
+        nonlocal woken
+        if not woken and level > _SPEECH_LEVEL_THRESHOLD:
+            hud.set_state("listening")
+            woken = True
+        hud.set_level(level)
+
+    return on_level
 
 
 def _voice_watcher(
@@ -322,16 +342,19 @@ def _voice_watcher(
     busy: threading.Event,
     follow_up: threading.Event,
 ) -> None:
-    """Runs for the life of the window: re-detects the microphone every couple of seconds and
-    listens for the wake word whenever one is connected, pushing anything transcribed onto the
-    same queue the input box uses. Backs off and retries on any error, which is what actually
-    happens when a Bluetooth headset disconnects mid-recording, and pauses around a reply already
-    in progress rather than letting two conversations run at once.
+    """Runs for the life of the window: re-detects the microphone every couple of seconds and, once
+    one's connected, waits for speech and transcribes it -- pushing it onto the same queue the
+    input box uses only if legion.greeting recognizes it as addressed to Legion (skipped for a
+    follow-up, which is already known to be). Backs off and retries on any error, which is what
+    actually happens when a Bluetooth headset disconnects mid-recording, and pauses around a reply
+    already in progress rather than letting two conversations run at once.
 
-    Right after Legion finishes answering something it heard, ``follow_up`` sends this straight
-    into one capture with no wake word needed, so a follow-up question doesn't need "hey jarvis"
-    repeated -- Endpointer's own silence timeout is what ends that window if nothing is said.
+    ``follow_up`` sends the next capture straight through with no greeting required, whether that's
+    because Legion just answered something spoken, or because the last thing heard was a greeting
+    with nothing after it ("Legion?") -- either way, a repeated greeting would be redundant.
     """
+    from legion.greeting import strip_greeting
+
     while True:
         if busy.is_set():
             time.sleep(_MIC_POLL_SECONDS)
@@ -342,18 +365,18 @@ def _voice_watcher(
             time.sleep(_MIC_POLL_SECONDS)
             continue
         hud.set_mic(label)
-        listening_for_followup = follow_up.is_set()
+        skip_greeting_check = follow_up.is_set()
         follow_up.clear()
-        if listening_for_followup:
-            hud.set_readout("LISTENING", "Ask a follow-up, or stay quiet to go back to standby.")
+        hud.set_state("idle")
+        if skip_greeting_check:
+            hud.set_readout("LISTENING", "Go ahead, or stay quiet to go back to standby.")
         try:
             heard = wake.listen(
                 device,
-                on_wake=lambda: hud.set_state("listening"),
-                on_level=hud.set_level,
-                wake_first=not listening_for_followup,
+                wake_first=False,
+                on_level=_speech_reactive(hud),
                 stop_check=busy.is_set,
-                wait_for_speech=_FOLLOW_UP_SECONDS if listening_for_followup else 5.0,
+                wait_for_speech=_FOLLOW_UP_SECONDS if skip_greeting_check else 5.0,
             )
         except Exception:
             hud.set_level(0)
@@ -367,9 +390,21 @@ def _voice_watcher(
         text = transcriber.transcribe(heard)
         if not text:
             hud.set_state("idle")
-            hud.set_readout("STANDBY", "(Didn't catch that.)")
             continue
-        hud.submit_voice(text)
+
+        if skip_greeting_check:
+            question = text
+        else:
+            question = strip_greeting(text)
+            if question is None:
+                # Not addressed to Legion -- background chatter, someone else's name, the TV.
+                # Say nothing and just keep listening.
+                continue
+            if question == "":
+                # "Legion?" and nothing else: addressed to Legion, but no question in it yet.
+                follow_up.set()
+                continue
+        hud.submit_voice(question)
 
 
 def _resolve_mic(mic_arg: int | str | None) -> tuple[int | str | None, str] | tuple[None, None]:

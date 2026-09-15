@@ -1,9 +1,12 @@
-"""Hands-free activation: wait for a wake word, then record until the user stops talking.
+"""Hands-free activation: wait for speech, then record until the user stops talking.
 
-Wake words come from openWakeWord. It ships a ready-made "hey jarvis" model, and a custom phrase such
-as "hey legion" is a single .onnx file, trained with its notebook and passed in place of the name.
-With no second key press to mark the end of a command, the Silero voice activity detector that ships
-alongside it decides when the user has stopped talking.
+Two ways to decide someone's actually talking to Legion. A trained model from openWakeWord listens
+for one specific phrase before recording starts at all -- it ships a ready-made "hey jarvis", and a
+custom phrase such as "hey legion" is a single .onnx file, trained with its own notebook and passed
+in place of the name. Or, with no model at all (``model=None``), anyone starting to speak is recorded
+and handed to legion.greeting to check afterwards -- see that module for why. Either way, with no
+second key press to mark the end of a command, the Silero voice activity detector that ships
+alongside openWakeWord decides when the user has stopped talking.
 """
 
 import re
@@ -57,24 +60,35 @@ class Endpointer:
 
 
 class WakeWord:
-    def __init__(self, model: str, threshold: float) -> None:
+    def __init__(self, model: str | None, threshold: float = 0.5) -> None:
+        """``model=None`` skips loading a keyword detector entirely, for VAD-only listening --
+        only ``wake_first=False`` calls are valid then; ``hear()`` raises otherwise."""
         # Imported here, because push-to-talk never needs them.
         import openwakeword.utils
-        from openwakeword.model import Model
         from openwakeword.vad import VAD
 
-        try:
-            # Fetches only files that are missing, so after the first run this never touches the network.
-            openwakeword.utils.download_models([model])
-            self._detector = Model(wakeword_models=[model], inference_framework="onnx")
-        except Exception as exc:
-            raise RuntimeError(
-                f"can't load the wake word model {model!r}: {exc}. "
-                "Use a built-in name such as hey_jarvis, or the path to a .onnx file"
-            ) from None
+        self._detector = None
+        self.phrase = ""
+        if model is not None:
+            from openwakeword.model import Model
+
+            try:
+                # Fetches only files that are missing, so after the first run this never touches the network.
+                openwakeword.utils.download_models([model])
+                self._detector = Model(wakeword_models=[model], inference_framework="onnx")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"can't load the wake word model {model!r}: {exc}. "
+                    "Use a built-in name such as hey_jarvis, or the path to a .onnx file"
+                ) from None
+            self.phrase = phrase(model)
+        else:
+            # download_models([]) means "download every official model", not "download none" --
+            # a name that matches none of them is the only way to fetch just the feature/VAD
+            # models it always fetches regardless, without every pretrained keyword model too.
+            openwakeword.utils.download_models(["__no_keyword_model__"])
         self._vad = VAD()
         self._threshold = threshold
-        self.phrase = phrase(model)
 
     def listen(
         self,
@@ -116,7 +130,10 @@ class WakeWord:
         # (legion.audio imports Synthesizer) just to reach a small pure function.
         from legion.audio import audio_level
 
-        self._detector.reset()
+        if wake_first and self._detector is None:
+            raise ValueError("this WakeWord has no keyword model (model=None); only wake_first=False is valid")
+        if self._detector is not None:
+            self._detector.reset()
         self._vad.reset_states()
         if wake_first:
             for frame in frames:

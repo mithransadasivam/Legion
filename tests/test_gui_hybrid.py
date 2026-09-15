@@ -108,28 +108,75 @@ class RecordingHud:
 
 
 def run_watcher_briefly(wake, transcriber, hud, busy, follow_up=None, seconds=0.3):
-    args = ("XM4", wake, transcriber, hud, busy, follow_up if follow_up is not None else threading.Event())
+    args = (
+        "XM4", wake, transcriber, hud, busy,
+        follow_up if follow_up is not None else threading.Event(),
+    )
     thread = threading.Thread(target=app_module._voice_watcher, args=args, daemon=True)
     thread.start()
     time.sleep(seconds)
+    # Parks the watcher (it only ever re-checks busy, never anything test-specific) so it stops
+    # calling into this test's fakes once the test itself has moved on -- without this, the thread
+    # keeps polling a monkeypatch that's about to be reverted, and its exceptions surface as noisy,
+    # unrelated warnings against whichever test happens to be running when it next wakes up.
+    busy.set()
     return thread
 
 
 class TestVoiceWatcher:
+    """No trained wake word: every listen() is wake_first=False (see wake.WakeWord(model=None)),
+    and what decides whether a transcription reaches the model is legion.greeting.strip_greeting."""
+
     @pytest.fixture(autouse=True)
     def fast_polling(self, monkeypatch):
         monkeypatch.setattr(app_module, "_MIC_POLL_SECONDS", 0.05)
 
-    def test_a_transcribed_command_is_submitted_the_same_way_typed_text_is(self, monkeypatch):
+    def test_a_greeted_command_is_submitted_with_the_greeting_stripped(self, monkeypatch):
         import numpy as np
 
         FakeDevices(monkeypatch).set(MME_HEADSET)
         wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
         hud = RecordingHud()
 
-        run_watcher_briefly(wake, FakeTranscriber("what's the weather"), hud, threading.Event())
+        run_watcher_briefly(wake, FakeTranscriber("Hey Legion, what's the weather"), hud, threading.Event())
 
         assert hud.submitted == ["what's the weather"]
+
+    def test_speech_with_no_greeting_is_never_submitted(self, monkeypatch):
+        # The core trade-off of not training a wake word: this is what keeps background chatter
+        # from reaching Ollama, and it isn't perfect (see legion/greeting.py's own tests), but a
+        # transcription with no greeting in it at all should never get this far.
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
+        hud = RecordingHud()
+
+        run_watcher_briefly(wake, FakeTranscriber("I think it might rain later"), hud, threading.Event())
+
+        assert hud.submitted == []
+
+    def test_a_bare_greeting_opens_a_follow_up_window_instead_of_being_submitted(self, monkeypatch):
+        # FakeWakeWord resolves instantly, unlike a real microphone, so a second cycle starts
+        # almost immediately -- proving the follow-up took effect means checking what that second
+        # cycle actually did, not peeking at a raw Event some time later.
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        transcripts = iter(["Legion", "what about tomorrow"])
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32), np.ones(100, dtype=np.float32)])
+        hud = RecordingHud()
+
+        class NextTranscriber:
+            def transcribe(self, audio):
+                return next(transcripts)
+
+        run_watcher_briefly(wake, NextTranscriber(), hud, threading.Event())
+
+        assert hud.submitted == ["what about tomorrow"], (
+            "the bare greeting itself should not be submitted, and the ungreeted follow-up should be"
+        )
+        assert wake.calls[1]["wait_for_speech"] == app_module._FOLLOW_UP_SECONDS
 
     def test_the_microphone_status_is_reported_before_it_connects_and_after(self, monkeypatch):
         import numpy as np
@@ -150,6 +197,7 @@ class TestVoiceWatcher:
         devices.set(MME_HEADSET)
         time.sleep(app_module._MIC_POLL_SECONDS + 0.05)
         assert "Headset (WH-1000XM4)" in hud.mic_status
+        busy.set()  # parks the watcher; see run_watcher_briefly's comment for why
 
     def test_the_watcher_never_starts_listening_while_a_reply_is_in_progress(self, monkeypatch):
         FakeDevices(monkeypatch).set(MME_HEADSET)
@@ -169,7 +217,7 @@ class TestVoiceWatcher:
         wake = FakeWakeWord([OSError("device disappeared"), np.ones(100, dtype=np.float32)])
         hud = RecordingHud()
 
-        run_watcher_briefly(wake, FakeTranscriber("still here"), hud, threading.Event(), seconds=app_module._MIC_POLL_SECONDS + 0.05)
+        run_watcher_briefly(wake, FakeTranscriber("Hey Legion, still here"), hud, threading.Event(), seconds=app_module._MIC_POLL_SECONDS + 0.05)
 
         assert hud.submitted == ["still here"], "the watcher should recover instead of dying on one bad cycle"
 
@@ -184,18 +232,29 @@ class TestVoiceWatcher:
 
         assert hud.submitted == []
 
-    def test_a_pending_follow_up_skips_the_wake_word_for_one_listen(self, monkeypatch):
+    def test_every_listen_skips_the_wake_word_since_there_is_no_trained_model(self, monkeypatch):
         import numpy as np
 
         FakeDevices(monkeypatch).set(MME_HEADSET)
-        wake = FakeWakeWord([np.ones(100, dtype=np.float32), np.ones(100, dtype=np.float32)])
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
+        hud = RecordingHud()
+
+        run_watcher_briefly(wake, FakeTranscriber("Hey Legion, hi"), hud, threading.Event())
+
+        assert wake.calls[0]["wake_first"] is False
+
+    def test_a_pending_follow_up_skips_the_greeting_check_and_waits_longer(self, monkeypatch):
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
         hud = RecordingHud()
         follow_up = threading.Event()
         follow_up.set()
 
-        run_watcher_briefly(wake, FakeTranscriber("a follow-up"), hud, threading.Event(), follow_up=follow_up)
+        run_watcher_briefly(wake, FakeTranscriber("what about tomorrow"), hud, threading.Event(), follow_up=follow_up)
 
-        assert wake.calls[0]["wake_first"] is False, "the follow-up itself should not require the wake word"
+        assert hud.submitted == ["what about tomorrow"], "no greeting needed -- a pending follow-up is already known to be addressed to Legion"
         assert wake.calls[0]["wait_for_speech"] == app_module._FOLLOW_UP_SECONDS
 
     def test_the_follow_up_flag_is_only_honoured_once(self, monkeypatch):
@@ -207,21 +266,21 @@ class TestVoiceWatcher:
         follow_up = threading.Event()
         follow_up.set()
 
-        run_watcher_briefly(wake, FakeTranscriber("hi"), hud, threading.Event(), follow_up=follow_up, seconds=0.4)
+        run_watcher_briefly(wake, FakeTranscriber("what about tomorrow"), hud, threading.Event(), follow_up=follow_up, seconds=0.3)
 
-        assert wake.calls[0]["wake_first"] is False
-        assert all(call["wake_first"] is True for call in wake.calls[1:]), (
-            "later cycles should require the wake word again, or every reply would leave the mic wide open"
+        assert wake.calls[0]["wait_for_speech"] == app_module._FOLLOW_UP_SECONDS
+        assert all(call["wait_for_speech"] == 5.0 for call in wake.calls[1:]), (
+            "later cycles should require a greeting again, or every reply would leave the mic wide open"
         )
 
-    def test_without_a_pending_follow_up_the_wake_word_is_required_as_usual(self, monkeypatch):
+    def test_without_a_pending_follow_up_a_greeting_is_required_as_usual(self, monkeypatch):
         import numpy as np
 
         FakeDevices(monkeypatch).set(MME_HEADSET)
         wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
         hud = RecordingHud()
 
-        run_watcher_briefly(wake, FakeTranscriber("hi"), hud, threading.Event(), follow_up=threading.Event())
+        run_watcher_briefly(wake, FakeTranscriber("what about tomorrow"), hud, threading.Event(), follow_up=threading.Event())
 
-        assert wake.calls[0]["wake_first"] is True
+        assert hud.submitted == [], "with no greeting and no pending follow-up, this should be discarded"
         assert wake.calls[0]["wait_for_speech"] == 5.0
