@@ -15,7 +15,10 @@ from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from legion.audio import SpeechQueue
+    from legion.wake import WakeWord
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,6 +87,23 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--text", action="store_true", help="type instead of talking")
     mode.add_argument("--ask", type=Path, metavar="WAV", help="answer a recorded question, then exit")
+    mode.add_argument(
+        "--wake",
+        action="store_true",
+        default=os.environ.get("LEGION_WAKE") == "1",
+        help="hands-free: say the wake word to talk, instead of pressing Enter",
+    )
+    parser.add_argument(
+        "--wake-model",
+        default=os.environ.get("LEGION_WAKE_MODEL", "hey_jarvis"),
+        help="wake word: a built-in name, or the path to a custom .onnx model (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--wake-threshold",
+        type=float,
+        default=float(os.environ.get("LEGION_WAKE_THRESHOLD", "0.5")),
+        help="how sure the wake word model must be, from 0 to 1; raise it if Legion wakes by mistake (default: %(default)s)",
+    )
     parser.add_argument("--save", type=Path, metavar="WAV", help="with --ask: write the spoken reply to a file")
     parser.add_argument("--quiet", action="store_true", help="print replies without speaking them")
     parser.add_argument(
@@ -133,24 +153,26 @@ def _text_loop(brain: Brain, speech: SpeechQueue | None) -> None:
 
 
 def _voice_loop(args: argparse.Namespace, brain: Brain) -> None:
-    from legion.audio import microphone_name, record_until_enter
-    from legion.keys import discard_pending_keys
+    from legion.audio import microphone_name
     from legion.stt import SAMPLE_RATE, Transcriber
 
     print(f"Microphone: {microphone_name(args.mic, SAMPLE_RATE)}")
     speech = None if args.quiet else _start_speech(args.voice)
     print("Loading speech recognition...", flush=True)
     transcriber = Transcriber(args.whisper)
-    print("Legion is online. Press Enter to talk, Enter again to stop.")
+    if args.wake:
+        from legion.wake import WakeWord
+
+        print("Loading wake word...", flush=True)
+        wake = WakeWord(args.wake_model, args.wake_threshold)
+        print(f'Legion is online. Say "{wake.phrase}", then your question; it stops listening when you do.')
+    else:
+        print("Legion is online. Press Enter to talk, Enter again to stop.")
     print("Press Enter while Legion is talking to cut in. Ctrl+C to quit.")
     cut_in = False
     while True:
-        if not cut_in:
-            discard_pending_keys()
-            input("\n[Enter] to talk ")
-        discard_pending_keys()
-        print("● Listening... [Enter] to stop", flush=True)
-        text = transcriber.transcribe(record_until_enter(SAMPLE_RATE, args.mic))
+        audio = _hear_after_wake_word(wake, args.mic, cut_in) if args.wake else _record_after_enter(args.mic, cut_in)
+        text = transcriber.transcribe(audio) if audio.size else ""
         if not text:
             print("(Didn't catch that.)")
             cut_in = False
@@ -158,6 +180,26 @@ def _voice_loop(args: argparse.Namespace, brain: Brain) -> None:
         print(f"You: {text}")
         _respond(brain, text, speech)
         cut_in = speech is not None and _wait_unless_cut_in(speech)
+
+
+def _record_after_enter(mic: int | str | None, cut_in: bool) -> np.ndarray:
+    from legion.audio import record_until_enter
+    from legion.keys import discard_pending_keys
+    from legion.stt import SAMPLE_RATE
+
+    if not cut_in:
+        discard_pending_keys()
+        input("\n[Enter] to talk ")
+    discard_pending_keys()
+    print("● Listening... [Enter] to stop", flush=True)
+    return record_until_enter(SAMPLE_RATE, mic)
+
+
+def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -> np.ndarray:
+    # After a cut-in the user is already talking, so there's no wake word to wait for.
+    if not cut_in:
+        print(f'\n(say "{wake.phrase}")', flush=True)
+    return wake.listen(mic, on_wake=lambda: print("● Listening...", flush=True), wake_first=not cut_in)
 
 
 def _wait_unless_cut_in(speech: SpeechQueue) -> bool:
