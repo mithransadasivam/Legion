@@ -24,21 +24,31 @@ class Hud:
 
     def __init__(self) -> None:
         self._window: Any = None
-        self._typed: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, str]] = queue.Queue()
 
     def attach(self, window: Any) -> None:
         self._window = window
 
     def submit(self, text: str) -> None:
         """Called from the page itself (as ``pywebview.api.submit``) when its input box is used."""
+        self._enqueue("typed", text)
+
+    def submit_voice(self, text: str) -> None:
+        """Called by the voice watcher with whatever it transcribed, on the same queue typed
+        input uses -- so the main loop can tell a follow-up is worth listening for without the
+        wake word, which typed input never needs."""
+        self._enqueue("voice", text)
+
+    def _enqueue(self, source: str, text: str) -> None:
         text = text.strip()
         if text:
-            self._typed.put(text)
+            self._queue.put((source, text))
 
-    def wait_for_input(self, timeout: float | None = None) -> str | None:
-        """Block until the window's input box is used, or the timeout expires."""
+    def wait_for_input(self, timeout: float | None = None) -> tuple[str, str] | None:
+        """Block for (source, text) -- source is "typed" or "voice" -- until the window's input
+        box is used or the voice watcher transcribes a command, or the timeout expires."""
         try:
-            return self._typed.get(timeout=timeout)
+            return self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
 

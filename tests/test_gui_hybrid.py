@@ -69,8 +69,8 @@ class FakeWakeWord:
         self._results = iter(results)
         self.calls = []
 
-    def listen(self, device, on_wake=None, on_level=None, stop_check=None):
-        self.calls.append(device)
+    def listen(self, device, on_wake=None, on_level=None, stop_check=None, wake_first=True, wait_for_speech=5.0):
+        self.calls.append({"device": device, "wake_first": wake_first, "wait_for_speech": wait_for_speech})
         result = next(self._results)
         if isinstance(result, Exception):
             raise result
@@ -94,7 +94,7 @@ class RecordingHud:
     def set_mic(self, status):
         self.mic_status.append(status)
 
-    def submit(self, text):
+    def submit_voice(self, text):
         self.submitted.append(text)
 
     def set_state(self, mode):
@@ -107,8 +107,9 @@ class RecordingHud:
         pass
 
 
-def run_watcher_briefly(wake, transcriber, hud, busy, seconds=0.3):
-    thread = threading.Thread(target=app_module._voice_watcher, args=("XM4", wake, transcriber, hud, busy), daemon=True)
+def run_watcher_briefly(wake, transcriber, hud, busy, follow_up=None, seconds=0.3):
+    args = ("XM4", wake, transcriber, hud, busy, follow_up if follow_up is not None else threading.Event())
+    thread = threading.Thread(target=app_module._voice_watcher, args=args, daemon=True)
     thread.start()
     time.sleep(seconds)
     return thread
@@ -139,7 +140,9 @@ class TestVoiceWatcher:
         hud = RecordingHud()
         busy = threading.Event()
 
-        thread = threading.Thread(target=app_module._voice_watcher, args=("XM4", wake, FakeTranscriber("hi"), hud, busy), daemon=True)
+        thread = threading.Thread(
+            target=app_module._voice_watcher, args=("XM4", wake, FakeTranscriber("hi"), hud, busy, threading.Event()), daemon=True
+        )
         thread.start()
         time.sleep(app_module._MIC_POLL_SECONDS + 0.05)
         assert "(none detected)" in hud.mic_status
@@ -180,3 +183,45 @@ class TestVoiceWatcher:
         run_watcher_briefly(wake, FakeTranscriber("should not be reached"), hud, threading.Event())
 
         assert hud.submitted == []
+
+    def test_a_pending_follow_up_skips_the_wake_word_for_one_listen(self, monkeypatch):
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32), np.ones(100, dtype=np.float32)])
+        hud = RecordingHud()
+        follow_up = threading.Event()
+        follow_up.set()
+
+        run_watcher_briefly(wake, FakeTranscriber("a follow-up"), hud, threading.Event(), follow_up=follow_up)
+
+        assert wake.calls[0]["wake_first"] is False, "the follow-up itself should not require the wake word"
+        assert wake.calls[0]["wait_for_speech"] == app_module._FOLLOW_UP_SECONDS
+
+    def test_the_follow_up_flag_is_only_honoured_once(self, monkeypatch):
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32) for _ in range(3)])
+        hud = RecordingHud()
+        follow_up = threading.Event()
+        follow_up.set()
+
+        run_watcher_briefly(wake, FakeTranscriber("hi"), hud, threading.Event(), follow_up=follow_up, seconds=0.4)
+
+        assert wake.calls[0]["wake_first"] is False
+        assert all(call["wake_first"] is True for call in wake.calls[1:]), (
+            "later cycles should require the wake word again, or every reply would leave the mic wide open"
+        )
+
+    def test_without_a_pending_follow_up_the_wake_word_is_required_as_usual(self, monkeypatch):
+        import numpy as np
+
+        FakeDevices(monkeypatch).set(MME_HEADSET)
+        wake = FakeWakeWord([np.ones(100, dtype=np.float32)])
+        hud = RecordingHud()
+
+        run_watcher_briefly(wake, FakeTranscriber("hi"), hud, threading.Event(), follow_up=threading.Event())
+
+        assert wake.calls[0]["wake_first"] is True
+        assert wake.calls[0]["wait_for_speech"] == 5.0

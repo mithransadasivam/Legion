@@ -64,3 +64,18 @@ def test_the_wake_word_in_one_breath_with_the_question_still_works(speak, wake):
 
     assert command is not None and command.size
     assert "france" in Transcriber("base.en").transcribe(command).lower()
+
+
+def test_a_follow_up_is_heard_without_repeating_the_wake_word(speak, wake):
+    """The scenario the follow-up window exists for: ask something, then ask again with no
+    wake word at all -- exactly what --gui does right after a voice-originated reply."""
+    first = wake.hear(speak(1.0, "Hey Jarvis.", 0.4, "What is the capital of France?", 3.0))
+    assert first is not None and first.size
+
+    second = wake.hear(speak("And what is its population?", 3.0), wake_first=False, wait_for_speech=6.0)
+
+    assert second is not None and second.size
+    from legion.stt import Transcriber
+
+    heard = Transcriber("base.en").transcribe(second).lower()
+    assert "population" in heard

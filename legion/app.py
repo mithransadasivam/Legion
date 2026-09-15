@@ -273,8 +273,11 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
         hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase=wake.phrase if wake else "(typing only)")
 
         busy = threading.Event()
+        # Set by this loop right after a voice-originated reply finishes, so the watcher's next
+        # listen skips straight to capture -- a follow-up shouldn't need the wake word repeated.
+        follow_up = threading.Event()
         if wake:
-            threading.Thread(target=_voice_watcher, args=(args.mic, wake, transcriber, hud, busy), daemon=True).start()
+            threading.Thread(target=_voice_watcher, args=(args.mic, wake, transcriber, hud, busy, follow_up), daemon=True).start()
         else:
             hud.set_mic("(typing only, no microphone)")
 
@@ -285,9 +288,10 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
                     "STANDBY",
                     f'Say "{wake.phrase}" or type above.' if wake else "Type your question above, then press Enter.",
                 )
-                text = hud.wait_for_input()
-                if not text:
+                heard = hud.wait_for_input()
+                if not heard:
                     continue
+                source, text = heard
                 busy.set()
                 hud.set_state("thinking")
                 print(f"You: {text}")
@@ -297,6 +301,8 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
                     speech.wait()
                 hud.set_level(0)
                 busy.clear()
+                if source == "voice":
+                    follow_up.set()
         except KeyboardInterrupt:
             # gui.run() always closes the window once this function returns, either way.
             print("\nStanding down.")
@@ -305,6 +311,7 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
 
 
 _MIC_POLL_SECONDS = 2.0
+_FOLLOW_UP_SECONDS = 6.0
 
 
 def _voice_watcher(
@@ -313,12 +320,17 @@ def _voice_watcher(
     transcriber: Transcriber,
     hud: Hud,
     busy: threading.Event,
+    follow_up: threading.Event,
 ) -> None:
     """Runs for the life of the window: re-detects the microphone every couple of seconds and
-    listens for the wake word whenever one is connected, pushing anything transcribed into the
+    listens for the wake word whenever one is connected, pushing anything transcribed onto the
     same queue the input box uses. Backs off and retries on any error, which is what actually
     happens when a Bluetooth headset disconnects mid-recording, and pauses around a reply already
     in progress rather than letting two conversations run at once.
+
+    Right after Legion finishes answering something it heard, ``follow_up`` sends this straight
+    into one capture with no wake word needed, so a follow-up question doesn't need "hey jarvis"
+    repeated -- Endpointer's own silence timeout is what ends that window if nothing is said.
     """
     while True:
         if busy.is_set():
@@ -330,12 +342,18 @@ def _voice_watcher(
             time.sleep(_MIC_POLL_SECONDS)
             continue
         hud.set_mic(label)
+        listening_for_followup = follow_up.is_set()
+        follow_up.clear()
+        if listening_for_followup:
+            hud.set_readout("LISTENING", "Ask a follow-up, or stay quiet to go back to standby.")
         try:
             heard = wake.listen(
                 device,
                 on_wake=lambda: hud.set_state("listening"),
                 on_level=hud.set_level,
+                wake_first=not listening_for_followup,
                 stop_check=busy.is_set,
+                wait_for_speech=_FOLLOW_UP_SECONDS if listening_for_followup else 5.0,
             )
         except Exception:
             hud.set_level(0)
@@ -351,7 +369,7 @@ def _voice_watcher(
             hud.set_state("idle")
             hud.set_readout("STANDBY", "(Didn't catch that.)")
             continue
-        hud.submit(text)
+        hud.submit_voice(text)
 
 
 def _resolve_mic(mic_arg: int | str | None) -> tuple[int | str | None, str] | tuple[None, None]:

@@ -83,12 +83,13 @@ class WakeWord:
         wake_first: bool = True,
         on_level: Callable[[float], None] | None = None,
         stop_check: Callable[[], bool] | None = None,
+        wait_for_speech: float = 5.0,
     ) -> np.ndarray:
         """Wait for the wake word, unless ``wake_first`` is False, then return the command that follows it."""
         import sounddevice as sd
 
         with sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=FRAME) as stream:
-            command = self.hear(_frames(stream), on_wake, wake_first, on_level, stop_check)
+            command = self.hear(_frames(stream), on_wake, wake_first, on_level, stop_check, wait_for_speech)
         return command if command is not None else np.zeros(0, dtype=np.float32)
 
     def hear(
@@ -98,15 +99,18 @@ class WakeWord:
         wake_first: bool = True,
         on_level: Callable[[float], None] | None = None,
         stop_check: Callable[[], bool] | None = None,
+        wait_for_speech: float = 5.0,
     ) -> np.ndarray | None:
         """The command spoken after the wake word, as 16 kHz float audio.
 
-        Empty if the user woke Legion and then said nothing; None if the frames ran out before it
-        woke, or ``stop_check`` returned True first. ``on_level`` is called with a 0..1 loudness
-        estimate for every frame after the wake word, for driving a live meter — not before it,
-        since a HUD showing "idle" has nothing to meter yet. ``stop_check`` is polled once per
-        frame, but only while still waiting for the wake word: once the user is actually talking,
-        cutting them off mid-command would be worse than letting this call finish.
+        Empty if the user woke Legion and then said nothing within ``wait_for_speech`` seconds --
+        worth raising a little for a wake-word-free follow-up, since deciding whether you have one
+        takes a beat longer than a command you were already about to say. None if the frames ran
+        out before it woke, or ``stop_check`` returned True first. ``on_level`` is called with a
+        0..1 loudness estimate for every frame after the wake word, for driving a live meter — not
+        before it, since a HUD showing "idle" has nothing to meter yet. ``stop_check`` is polled
+        once per frame, but only while still waiting for the wake word: once the user is actually
+        talking, cutting them off mid-command would be worse than letting this call finish.
         """
         # Imported here, not at module scope, so importing wake.py never pulls in Piper's chain
         # (legion.audio imports Synthesizer) just to reach a small pure function.
@@ -124,7 +128,7 @@ class WakeWord:
                 return None
         if on_wake:
             on_wake()
-        endpointer = Endpointer()
+        endpointer = Endpointer(wait_for_speech=wait_for_speech)
         command = []
         for frame in frames:
             command.append(frame)

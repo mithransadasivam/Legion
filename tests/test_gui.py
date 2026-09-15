@@ -62,19 +62,26 @@ class TestHud:
 
 
 class TestTypedInput:
-    def test_submitting_text_is_what_wait_for_input_returns(self):
+    def test_a_typed_submission_is_tagged_as_typed(self):
         hud = Hud()
 
         hud.submit("what's the weather like")
 
-        assert hud.wait_for_input(timeout=1) == "what's the weather like"
+        assert hud.wait_for_input(timeout=1) == ("typed", "what's the weather like")
+
+    def test_a_voice_submission_is_tagged_as_voice(self):
+        hud = Hud()
+
+        hud.submit_voice("what's the weather like")
+
+        assert hud.wait_for_input(timeout=1) == ("voice", "what's the weather like")
 
     def test_leading_and_trailing_whitespace_is_stripped(self):
         hud = Hud()
 
         hud.submit("  hello there  \n")
 
-        assert hud.wait_for_input(timeout=1) == "hello there"
+        assert hud.wait_for_input(timeout=1) == ("typed", "hello there")
 
     def test_an_empty_submission_is_not_queued_at_all(self):
         hud = Hud()
@@ -86,14 +93,14 @@ class TestTypedInput:
     def test_waiting_with_nothing_submitted_times_out_to_none(self):
         assert Hud().wait_for_input(timeout=0.2) is None
 
-    def test_submissions_are_delivered_in_the_order_they_arrived(self):
+    def test_submissions_are_delivered_in_the_order_they_arrived_regardless_of_source(self):
         hud = Hud()
 
         hud.submit("first")
-        hud.submit("second")
+        hud.submit_voice("second")
 
-        assert hud.wait_for_input(timeout=1) == "first"
-        assert hud.wait_for_input(timeout=1) == "second"
+        assert hud.wait_for_input(timeout=1) == ("typed", "first")
+        assert hud.wait_for_input(timeout=1) == ("voice", "second")
 
 
 class _FiringEvent:
