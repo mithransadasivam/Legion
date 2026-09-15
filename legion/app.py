@@ -40,10 +40,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Memory: {len(memory.notes)} notes in {args.memory}")
         if args.ask:
             return _answer_recording(args, brain)
-        if args.text:
-            _text_loop(brain, None if args.quiet else _start_speech(args.voice))
-        elif args.gui:
+        if args.gui:
             _gui_loop(args, brain)
+        elif args.text:
+            _text_loop(brain, None if args.quiet else _start_speech(args.voice))
         else:
             _voice_loop(args, brain)
     except RuntimeError as exc:
@@ -105,11 +105,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=os.environ.get("LEGION_WAKE") == "1",
         help="hands-free: say the wake word to talk, instead of pressing Enter",
     )
-    mode.add_argument(
+    parser.add_argument(
         "--gui",
         action="store_true",
         default=os.environ.get("LEGION_GUI") == "1",
-        help="open a HUD window instead of the terminal; always hands-free, via the wake word",
+        help="open a HUD window alongside the terminal; hands-free via the wake word, or combine "
+        "with --text to type without a microphone",
     )
     parser.add_argument(
         "--wake-model",
@@ -149,6 +150,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         parser.error("--save only works with --ask")
     if args.save and args.quiet:
         parser.error("--save and --quiet contradict each other")
+    if args.gui and args.ask:
+        parser.error("--gui doesn't work with --ask: --ask answers one recording and exits, --gui keeps a window open")
     return args
 
 
@@ -221,55 +224,86 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
 
 
 def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
-    """Same conversation as --wake, shown in a HUD window instead of the terminal.
+    """The conversation shown in a HUD window instead of the terminal.
 
-    No cut-in yet: without a keyboard, "say the wake word again to interrupt" would need a second
-    mic stream open during playback. Left for later; Legion just finishes speaking first.
+    With --text, typing replaces the microphone and the wake word entirely -- no headset needed,
+    and the window still shows Legion really thinking and speaking, not just answering. Otherwise
+    it's the same hands-free conversation as --wake.
+
+    No cut-in yet in voice mode: without a keyboard, "say the wake word again to interrupt" would
+    need a second mic stream open during playback. Left for later; Legion just finishes speaking first.
     """
-    from legion.audio import SpeechQueue, microphone_name
+    from legion.audio import SpeechQueue
     from legion.gui import run
-    from legion.stt import SAMPLE_RATE, Transcriber
     from legion.tts import Synthesizer
-    from legion.wake import WakeWord
 
     global _active_hud
 
-    mic_name = microphone_name(args.mic, SAMPLE_RATE)
-    print(f"Microphone: {mic_name}")
     synthesizer = None
     if not args.quiet:
         print("Loading voice...", flush=True)
         synthesizer = Synthesizer(args.voice)
-    print("Loading speech recognition...", flush=True)
-    transcriber = Transcriber(args.whisper)
-    print("Loading wake word...", flush=True)
-    wake = WakeWord(args.wake_model, args.wake_threshold)
-    print(f'Opening the Legion window. Say "{wake.phrase}" to talk; close the window to quit.')
+
+    wake = None
+    transcriber = None
+    if args.text:
+        mic_label = "(typed, no microphone)"
+        print("Opening the Legion window. Type into this terminal; close the window to quit.")
+    else:
+        from legion.audio import microphone_name
+        from legion.stt import SAMPLE_RATE, Transcriber
+        from legion.wake import WakeWord
+
+        mic_label = microphone_name(args.mic, SAMPLE_RATE)
+        print(f"Microphone: {mic_label}")
+        print("Loading speech recognition...", flush=True)
+        transcriber = Transcriber(args.whisper)
+        print("Loading wake word...", flush=True)
+        wake = WakeWord(args.wake_model, args.wake_threshold)
+        print(f'Opening the Legion window. Say "{wake.phrase}" to talk; close the window to quit.')
 
     def worker(hud: Hud) -> None:
         global _active_hud
         _active_hud = hud
         speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
-        hud.set_config(model=args.model, host=args.host, mic=mic_name, voice=args.voice, wake_phrase=wake.phrase)
-        while True:
-            hud.set_state("idle")
-            hud.set_readout("STANDBY", f'Say "{wake.phrase}" to talk.')
-            heard = wake.listen(args.mic, on_wake=lambda: hud.set_state("listening"), on_level=hud.set_level)
-            if heard.size == 0:
-                continue
-            hud.set_level(0)
-            hud.set_state("thinking")
-            hud.set_readout("PROCESSING", "")
-            text = transcriber.transcribe(heard)
-            if not text:
-                hud.set_readout("STANDBY", "(Didn't catch that.)")
-                continue
-            print(f"You: {text}")
-            hud.set_readout("HEARD", text)
-            _respond(brain, text, speech, hud=hud)
-            if speech:
-                speech.wait()
-            hud.set_level(0)
+        hud.set_config(
+            model=args.model,
+            host=args.host,
+            mic=mic_label,
+            voice=args.voice,
+            wake_phrase=wake.phrase if wake else "(typing)",
+        )
+        try:
+            while True:
+                hud.set_state("idle")
+                if wake:
+                    hud.set_readout("STANDBY", f'Say "{wake.phrase}" to talk.')
+                    heard = wake.listen(args.mic, on_wake=lambda: hud.set_state("listening"), on_level=hud.set_level)
+                    if heard.size == 0:
+                        continue
+                    hud.set_level(0)
+                    hud.set_state("thinking")
+                    hud.set_readout("PROCESSING", "")
+                    text = transcriber.transcribe(heard)
+                    if not text:
+                        hud.set_readout("STANDBY", "(Didn't catch that.)")
+                        continue
+                    print(f"You: {text}")
+                else:
+                    hud.set_readout("STANDBY", "Type below, then press Enter.")
+                    text = input("\nYou: ").strip()
+                    if not text:
+                        continue
+                    hud.set_state("thinking")
+                hud.set_readout("HEARD", text)
+                _respond(brain, text, speech, hud=hud)
+                if speech:
+                    speech.wait()
+                hud.set_level(0)
+        except (KeyboardInterrupt, EOFError):
+            # Typing mode: stdin closed (piped input ran out, or the terminal itself closed).
+            # gui.run() always closes the window once this function returns, either way.
+            print("\nStanding down.")
 
     run(worker)
 

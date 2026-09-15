@@ -1,3 +1,8 @@
+import sys
+import types
+
+import pytest
+
 from legion.gui import Hud
 
 
@@ -48,3 +53,54 @@ class TestHud:
         hud.attach(DeadWindow())
 
         hud.set_state("idle")  # must not raise
+
+
+class _FiringEvent:
+    """Stands in for one pywebview event: fires the callback the moment it's added, since these
+    tests never wait on a real page load."""
+
+    def __iadd__(self, callback):
+        callback()
+        return self
+
+
+class FakeWebviewWindow(FakeWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events = types.SimpleNamespace(loaded=_FiringEvent())
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
+def _fake_webview(window):
+    """A stand-in for the pywebview module: create_window returns ``window``, and start runs the
+    given function immediately instead of opening a real GUI loop."""
+    return types.SimpleNamespace(create_window=lambda *a, **k: window, start=lambda fn: fn())
+
+
+class TestRun:
+    def test_the_window_is_destroyed_even_when_the_worker_crashes(self, monkeypatch):
+        # This is the actual bug: --gui --text hung forever after typed input ran out, because
+        # EOFError killed the background thread and nothing else was ever going to close the window.
+        window = FakeWebviewWindow()
+        monkeypatch.setitem(sys.modules, "webview", _fake_webview(window))
+        from legion.gui import run
+
+        def worker(hud):
+            raise EOFError("stdin closed")
+
+        with pytest.raises(EOFError):
+            run(worker)
+
+        assert window.destroyed
+
+    def test_the_window_is_also_destroyed_after_an_ordinary_return(self, monkeypatch):
+        window = FakeWebviewWindow()
+        monkeypatch.setitem(sys.modules, "webview", _fake_webview(window))
+        from legion.gui import run
+
+        run(lambda hud: None)
+
+        assert window.destroyed

@@ -58,6 +58,13 @@ def run(target: Callable[[Hud], None], *, width: int = 560, height: int = 780) -
     def _start() -> None:
         loaded.wait(timeout=10)
         hud.attach(window)
-        target(hud)
+        try:
+            target(hud)
+        finally:
+            # webview.start() blocks the main thread until every window closes. Without this, an
+            # exception in target() -- EOFError from typed input hitting end-of-file is the one
+            # that actually happened -- leaves the window open and the whole process hung forever,
+            # since nothing else was ever going to close it.
+            window.destroy()
 
     webview.start(_start)
