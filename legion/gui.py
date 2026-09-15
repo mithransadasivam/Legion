@@ -7,6 +7,7 @@ straight into the page's own state functions -- no server, no build step, no sec
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -16,16 +17,33 @@ _HUD_HTML = Path(__file__).parent / "hud" / "index.html"
 
 
 class Hud:
-    """Pushes state into the HUD window. Safe to call before the window has finished loading."""
+    """Pushes state into the HUD window, and receives what the user typed into its input box.
+
+    Safe to push state before the window has finished loading; calls made before then are dropped.
+    """
 
     def __init__(self) -> None:
         self._window: Any = None
+        self._typed: queue.Queue[str] = queue.Queue()
 
     def attach(self, window: Any) -> None:
         self._window = window
 
-    def set_config(self, *, model: str, host: str, mic: str, voice: str, wake_phrase: str) -> None:
-        self._call("setConfig", model, host, mic, voice, wake_phrase)
+    def submit(self, text: str) -> None:
+        """Called from the page itself (as ``pywebview.api.submit``) when its input box is used."""
+        text = text.strip()
+        if text:
+            self._typed.put(text)
+
+    def wait_for_input(self, timeout: float | None = None) -> str | None:
+        """Block until the window's input box is used, or the timeout expires."""
+        try:
+            return self._typed.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def set_config(self, *, model: str, host: str, mic: str, voice: str, wake_phrase: str, can_type: bool) -> None:
+        self._call("setConfig", model, host, mic, voice, wake_phrase, can_type)
 
     def set_state(self, mode: str) -> None:
         self._call("setState", mode)
@@ -51,7 +69,9 @@ def run(target: Callable[[Hud], None], *, width: int = 560, height: int = 780) -
     import webview
 
     hud = Hud()
-    window = webview.create_window("Legion", str(_HUD_HTML), width=width, height=height, background_color="#0a0d13")
+    window = webview.create_window(
+        "Legion", str(_HUD_HTML), js_api=hud, width=width, height=height, background_color="#0a0d13"
+    )
     loaded = threading.Event()
     window.events.loaded += loaded.set
 

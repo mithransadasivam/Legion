@@ -226,9 +226,10 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
 def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
     """The conversation shown in a HUD window instead of the terminal.
 
-    With --text, typing replaces the microphone and the wake word entirely -- no headset needed,
-    and the window still shows Legion really thinking and speaking, not just answering. Otherwise
-    it's the same hands-free conversation as --wake.
+    With --text, the window's own input box replaces the microphone and the wake word entirely --
+    no headset needed, nothing typed into the terminal, and the window still shows Legion really
+    thinking and speaking, not just answering. Otherwise it's the same hands-free conversation as
+    --wake.
 
     No cut-in yet in voice mode: without a keyboard, "say the wake word again to interrupt" would
     need a second mic stream open during playback. Left for later; Legion just finishes speaking first.
@@ -248,7 +249,7 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
     transcriber = None
     if args.text:
         mic_label = "(typed, no microphone)"
-        print("Opening the Legion window. Type into this terminal; close the window to quit.")
+        print("Opening the Legion window. Type into it; close the window to quit.")
     else:
         from legion.audio import microphone_name
         from legion.stt import SAMPLE_RATE, Transcriber
@@ -272,6 +273,7 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
             mic=mic_label,
             voice=args.voice,
             wake_phrase=wake.phrase if wake else "(typing)",
+            can_type=wake is None,
         )
         try:
             while True:
@@ -290,18 +292,18 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
                         continue
                     print(f"You: {text}")
                 else:
-                    hud.set_readout("STANDBY", "Type below, then press Enter.")
-                    text = input("\nYou: ").strip()
+                    hud.set_readout("STANDBY", "Type your question above, then press Enter.")
+                    text = hud.wait_for_input()
                     if not text:
                         continue
                     hud.set_state("thinking")
+                    print(f"You: {text}")
                 hud.set_readout("HEARD", text)
                 _respond(brain, text, speech, hud=hud)
                 if speech:
                     speech.wait()
                 hud.set_level(0)
-        except (KeyboardInterrupt, EOFError):
-            # Typing mode: stdin closed (piped input ran out, or the terminal itself closed).
+        except KeyboardInterrupt:
             # gui.run() always closes the window once this function returns, either way.
             print("\nStanding down.")
 
