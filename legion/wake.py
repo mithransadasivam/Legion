@@ -81,12 +81,13 @@ class WakeWord:
         device: int | str | None = None,
         on_wake: Callable[[], None] | None = None,
         wake_first: bool = True,
+        on_level: Callable[[float], None] | None = None,
     ) -> np.ndarray:
         """Wait for the wake word, unless ``wake_first`` is False, then return the command that follows it."""
         import sounddevice as sd
 
         with sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=FRAME) as stream:
-            command = self.hear(_frames(stream), on_wake, wake_first)
+            command = self.hear(_frames(stream), on_wake, wake_first, on_level)
         return command if command is not None else np.zeros(0, dtype=np.float32)
 
     def hear(
@@ -94,11 +95,18 @@ class WakeWord:
         frames: Iterator[np.ndarray],
         on_wake: Callable[[], None] | None = None,
         wake_first: bool = True,
+        on_level: Callable[[float], None] | None = None,
     ) -> np.ndarray | None:
         """The command spoken after the wake word, as 16 kHz float audio.
 
         Empty if the user woke Legion and then said nothing; None if the frames ran out before it woke.
+        ``on_level`` is called with a 0..1 loudness estimate for every frame after the wake word,
+        for driving a live meter — not before it, since a HUD showing "idle" has nothing to meter yet.
         """
+        # Imported here, not at module scope, so importing wake.py never pulls in Piper's chain
+        # (legion.audio imports Synthesizer) just to reach a small pure function.
+        from legion.audio import audio_level
+
         self._detector.reset()
         self._vad.reset_states()
         if wake_first:
@@ -113,6 +121,8 @@ class WakeWord:
         command = []
         for frame in frames:
             command.append(frame)
+            if on_level:
+                on_level(audio_level(frame.astype(np.float32) / 32768))
             if endpointer.finished(self._vad.predict(frame, frame_size=FRAME // 2)):
                 break
         if not endpointer.heard_speech:

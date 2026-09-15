@@ -3,6 +3,7 @@
 import queue
 import sys
 import threading
+from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
@@ -10,6 +11,15 @@ import sounddevice as sd
 from legion.tts import Synthesizer
 
 _PLAYBACK_BLOCK_SECONDS = 0.1
+_LEVEL_GAIN = 4.0  # raw RMS reads as barely-there for anything short of shouting
+
+
+def audio_level(samples: np.ndarray) -> float:
+    """A 0..1 loudness estimate for a block of float32 audio in [-1, 1], for driving a meter."""
+    if samples.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
+    return min(1.0, rms * _LEVEL_GAIN)
 
 
 def microphone_name(device: int | str | None, sample_rate: int) -> str:
@@ -41,13 +51,14 @@ def record_until_enter(sample_rate: int, device: int | str | None = None) -> np.
 class SpeechQueue:
     """Speaks sentences in order on a background thread, and can be cut off mid-sentence."""
 
-    def __init__(self, synthesizer: Synthesizer) -> None:
+    def __init__(self, synthesizer: Synthesizer, on_level: Callable[[float], None] | None = None) -> None:
         self._synthesizer = synthesizer
         self._pending: queue.Queue[tuple[int, str]] = queue.Queue()
         # Bumped by interrupt(); anything queued or playing under an older value is abandoned.
         self._generation = 0
         self._outstanding = 0
         self._idle = threading.Condition()
+        self._on_level = on_level
         threading.Thread(target=self._run, daemon=True).start()
 
     def say(self, text: str) -> None:
@@ -88,4 +99,7 @@ class SpeechQueue:
             for start in range(0, len(audio), block):
                 if generation != self._generation:
                     return
-                stream.write(audio[start : start + block].reshape(-1, 1))
+                chunk = audio[start : start + block]
+                stream.write(chunk.reshape(-1, 1))
+                if self._on_level:
+                    self._on_level(audio_level(chunk))

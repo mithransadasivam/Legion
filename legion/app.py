@@ -18,7 +18,13 @@ if TYPE_CHECKING:
     import numpy as np
 
     from legion.audio import SpeechQueue
+    from legion.gui import Hud
     from legion.wake import WakeWord
+
+# Set only while the GUI window is running, so the search/memory announce hooks below -- shared
+# with every other mode -- can also mirror themselves onto the HUD without threading a parameter
+# through Brain, which is built once in main() before the mode is even chosen.
+_active_hud: Hud | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
             return _answer_recording(args, brain)
         if args.text:
             _text_loop(brain, None if args.quiet else _start_speech(args.voice))
+        elif args.gui:
+            _gui_loop(args, brain)
         else:
             _voice_loop(args, brain)
     except RuntimeError as exc:
@@ -49,11 +57,15 @@ def main(argv: list[str] | None = None) -> int:
 def _announce_search() -> None:
     # Printed, never spoken: it explains the pause, and shows which answers came from the web.
     print("(checking the web) ", end="", flush=True)
+    if _active_hud:
+        _active_hud.set_readout("PROCESSING", "checking the web...")
 
 
 def _announce_notes(notes: list[str]) -> None:
     # Printed, never spoken, so it's always clear what Legion is keeping about you.
     print(f"(noted: {' '.join(notes)}) ", end="", flush=True)
+    if _active_hud:
+        _active_hud.set_readout("NOTED", " ".join(notes))
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -92,6 +104,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         default=os.environ.get("LEGION_WAKE") == "1",
         help="hands-free: say the wake word to talk, instead of pressing Enter",
+    )
+    mode.add_argument(
+        "--gui",
+        action="store_true",
+        default=os.environ.get("LEGION_GUI") == "1",
+        help="open a HUD window instead of the terminal; always hands-free, via the wake word",
     )
     parser.add_argument(
         "--wake-model",
@@ -202,6 +220,60 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
     return wake.listen(mic, on_wake=lambda: print("● Listening...", flush=True), wake_first=not cut_in)
 
 
+def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
+    """Same conversation as --wake, shown in a HUD window instead of the terminal.
+
+    No cut-in yet: without a keyboard, "say the wake word again to interrupt" would need a second
+    mic stream open during playback. Left for later; Legion just finishes speaking first.
+    """
+    from legion.audio import SpeechQueue, microphone_name
+    from legion.gui import run
+    from legion.stt import SAMPLE_RATE, Transcriber
+    from legion.tts import Synthesizer
+    from legion.wake import WakeWord
+
+    global _active_hud
+
+    mic_name = microphone_name(args.mic, SAMPLE_RATE)
+    print(f"Microphone: {mic_name}")
+    synthesizer = None
+    if not args.quiet:
+        print("Loading voice...", flush=True)
+        synthesizer = Synthesizer(args.voice)
+    print("Loading speech recognition...", flush=True)
+    transcriber = Transcriber(args.whisper)
+    print("Loading wake word...", flush=True)
+    wake = WakeWord(args.wake_model, args.wake_threshold)
+    print(f'Opening the Legion window. Say "{wake.phrase}" to talk; close the window to quit.')
+
+    def worker(hud: Hud) -> None:
+        global _active_hud
+        _active_hud = hud
+        speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
+        hud.set_config(model=args.model, host=args.host, mic=mic_name, voice=args.voice, wake_phrase=wake.phrase)
+        while True:
+            hud.set_state("idle")
+            hud.set_readout("STANDBY", f'Say "{wake.phrase}" to talk.')
+            heard = wake.listen(args.mic, on_wake=lambda: hud.set_state("listening"), on_level=hud.set_level)
+            if heard.size == 0:
+                continue
+            hud.set_level(0)
+            hud.set_state("thinking")
+            hud.set_readout("PROCESSING", "")
+            text = transcriber.transcribe(heard)
+            if not text:
+                hud.set_readout("STANDBY", "(Didn't catch that.)")
+                continue
+            print(f"You: {text}")
+            hud.set_readout("HEARD", text)
+            _respond(brain, text, speech, hud=hud)
+            if speech:
+                speech.wait()
+            hud.set_level(0)
+
+    run(worker)
+
+
 def _wait_unless_cut_in(speech: SpeechQueue) -> bool:
     """Let Legion finish talking, unless the user presses Enter first. Returns True if they cut in."""
     from legion.keys import discard_pending_keys, enter_pressed
@@ -240,14 +312,22 @@ def _answer_recording(args: argparse.Namespace, brain: Brain) -> int:
     return 0
 
 
-def _respond(brain: Brain, text: str, speech: SpeechQueue | None) -> str:
+def _respond(brain: Brain, text: str, speech: SpeechQueue | None, hud: Hud | None = None) -> str:
     """Print the reply as it streams and queue each sentence for speech; returns before speech finishes."""
     print("Legion: ", end="", flush=True)
     sentences = SentenceBuffer()
     reply: list[str] = []
+    speaking = False
     for token in brain.reply(text):
         print(token, end="", flush=True)
         reply.append(token)
+        if hud:
+            if not speaking:
+                # The first token is the moment generation actually starts, after any search --
+                # exactly when "thinking" should give way to "speaking" in the HUD.
+                hud.set_state("speaking")
+                speaking = True
+            hud.set_readout("REPLY", "".join(reply))
         if speech:
             for sentence in sentences.feed(token):
                 speech.say(clean_for_speech(sentence))

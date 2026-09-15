@@ -52,6 +52,10 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **The prompt is short on purpose.** Small models follow brief instructions far better than long ones. An early version told the model to decline questions needing *current* information, and the 3B model overgeneralized that into refusing to name the capital of Australia. The [persona](legion/persona.py) now draws that line explicitly: answer general knowledge, decline only live data like weather or news. It's also told to get into the user's ideas: say what's promising, add a thought, and ask one question back, which took follow-up questions on ideas from 0 of 12 replies to 12 of 12 while factual answers stayed short. That enthusiasm had a cost. Asked to set a dentist reminder, it replied "I've set a reminder for you, sir", which it can't do. So the prompt now says plainly that Legion can't take actions in the world, and claims like that fell from 6 in 12 replies to 1.
 
+**It can listen for a wake word instead of a key press.** `--wake` uses [openWakeWord](https://github.com/dscripka/openWakeWord)'s ready-made "hey jarvis" model to start listening on its own, and [Silero](https://github.com/snakers4/silero-vad)'s voice activity detector — bundled with it — ends the recording once you stop talking, instead of waiting for a second Enter. A custom phrase such as "hey legion" is a single `.onnx` file, trained with openWakeWord's own notebook and passed as `--wake-model` in place of the built-in name. Verified end to end with synthesized speech: the wake word fires and captures the command that follows it, ordinary speech without it never wakes Legion, and saying the wake word and the question in one breath still works. There's no cut-in yet in this mode — interrupting would mean listening for the wake word again while Legion is still talking, which needs a second mic stream open during playback.
+
+**It can show what it's doing instead of just printing it.** `--gui` opens a small window — a tactical HUD around a living core, styled after JARVIS's own on-screen presence in the films — instead of running in the terminal. The core's motion and the amplitude bars beside it are driven by the real microphone and speaker levels, not a canned animation, and the readout shows what Legion heard and what it's saying as it says it. It's built as one static HTML/JS file in [`legion/hud/`](legion/hud/index.html), shown in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows), and driven from Python by [`Hud`](legion/gui.py) calling straight into the page's own `setState`/`setLevel`/`setReadout` functions — no server, no build step, no second language. `--gui` always runs hands-free, the same as `--wake`.
+
 ## Setup
 
 Requires macOS, Linux, or Windows with Python 3.11+. The commands below are for macOS with [Homebrew](https://brew.sh).
@@ -77,6 +81,8 @@ uv run legion --text              # type instead of talking; replies are still s
 uv run legion --text --quiet      # plain text chat, no audio at all
 uv run legion --no-search         # never look anything up, even for live information
 uv run legion --no-memory         # don't remember anything between sessions
+uv run legion --wake              # hands-free: say "hey jarvis" to talk, instead of pressing Enter
+uv run legion --gui               # a HUD window instead of the terminal; always hands-free
 uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
 ```
 
@@ -115,6 +121,10 @@ Every option can also be set with an environment variable.
 | `--no-search` | `LEGION_SEARCH=0` | search enabled |
 | `--memory` | `LEGION_MEMORY_FILE` | `~/.legion/memory.txt` |
 | `--no-memory` | `LEGION_MEMORY=0` | memory enabled |
+| `--wake` | `LEGION_WAKE=1` | off (push-to-talk) |
+| `--wake-model` | `LEGION_WAKE_MODEL` | `hey_jarvis` |
+| `--wake-threshold` | `LEGION_WAKE_THRESHOLD` | `0.5` |
+| `--gui` | `LEGION_GUI=1` | off (terminal) |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
@@ -122,10 +132,10 @@ Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper
 
 ```bash
 uv run pytest                              # unit tests
-LEGION_INTEGRATION=1 uv run pytest         # also runs the audio round trip
+LEGION_INTEGRATION=1 uv run pytest         # also runs the audio, wake word, and GUI round trips
 ```
 
-The integration test synthesizes a sentence with Piper, transcribes it back with Whisper, and checks the words survive the trip. It's opt-in because it downloads both speech models.
+The audio integration test synthesizes a sentence with Piper and transcribes it back with Whisper. The wake word one does the same, then checks the wake word actually fires, and that unrelated speech never triggers it. The GUI one runs a real question through wake detection, transcription, and a real Ollama reply, and checks the result lands on the HUD in order. All three are opt-in: they download models, and the GUI one also needs Ollama running.
 
 ## Project layout
 
@@ -136,6 +146,11 @@ legion/
 ├── stt.py       Speech recognition (faster-whisper)
 ├── tts.py       Speech synthesis (Piper)
 ├── audio.py     Microphone capture and the interruptible background speech queue
+├── wake.py      Wake word detection and end-of-speech detection (openWakeWord, Silero VAD)
+├── gui.py       Drives the HUD window from Python
+├── hud/         The HUD itself: one static HTML/CSS/JS file, shown by pywebview
+├── search.py    Decides when to check the web, and formats what comes back
+├── memory.py    Notes about the user that last between sessions
 ├── keys.py      Non-blocking Enter detection, for cutting in mid-reply
 ├── text.py      Sentence buffering and cleanup for speech
 └── persona.py   Legion's personality
@@ -146,15 +161,16 @@ claude-project/  An earlier, no-code version of Legion (see below)
 ## Limitations
 
 - **A 3B model is not Claude or GPT.** It's good at conversation and general knowledge and noticeably weaker at nuanced reasoning. Pointing `--host` at a bigger model on a GPU machine helps a lot.
-- **No live information yet.** It can't check the news, weather, or anything else happening right now.
-- **Push-to-talk, not a wake word.** You press Enter to talk.
-- Conversation history lasts for the session only.
+- **No cut-in in `--wake` or `--gui` mode.** There's no key press to interrupt with; saying the wake word again while Legion is talking would need a second mic stream open during playback, and isn't built yet.
+- Conversation history lasts for the session only, though [memory](legion/memory.py) carries the lasting facts forward.
 
 ## Roadmap
 
-- [ ] Wake word ("Hey Legion") via openWakeWord, for hands-free use
-- [ ] Web search, so it can answer questions about current events
-- [ ] Memory that persists between sessions
+- [x] Wake word, for hands-free use — a custom "Hey Legion" model is a drop-in `--wake-model`, once trained
+- [x] Web search, so it can answer questions about current events
+- [x] Memory that persists between sessions
+- [x] A HUD window
+- [ ] Cut-in for `--wake` and `--gui`: interrupt by saying the wake word again while Legion is talking
 - [ ] A custom Piper voice
 
 ## claude-project/

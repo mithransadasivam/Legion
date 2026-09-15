@@ -97,3 +97,37 @@ def test_empty_text_is_ignored(played):
     speech = SpeechQueue(FakeSynthesizer(seconds_per_sentence=0.1))
     speech.say("")
     assert speech.wait(timeout=0.5)
+
+
+class TestAudioLevel:
+    def test_silence_reads_as_zero(self):
+        assert audio.audio_level(np.zeros(100, dtype=np.float32)) == 0.0
+
+    def test_a_full_scale_tone_reads_near_one(self):
+        loud = np.ones(100, dtype=np.float32)
+        assert audio.audio_level(loud) == 1.0
+
+    def test_louder_audio_reads_higher(self):
+        quiet = np.full(100, 0.05, dtype=np.float32)
+        loud = np.full(100, 0.2, dtype=np.float32)
+        assert audio.audio_level(quiet) < audio.audio_level(loud)
+
+    def test_an_empty_block_reads_as_zero_instead_of_crashing(self):
+        assert audio.audio_level(np.zeros(0, dtype=np.float32)) == 0.0
+
+
+class FakeLoudSynthesizer(FakeSynthesizer):
+    def synthesize(self, text: str) -> np.ndarray:
+        self.synthesized.append(text)
+        return np.full(int(SAMPLE_RATE * self.seconds), 0.5, dtype=np.float32)
+
+
+def test_on_level_is_called_with_the_level_of_each_block_played(played):
+    levels: list[float] = []
+    speech = SpeechQueue(FakeLoudSynthesizer(seconds_per_sentence=0.2), on_level=levels.append)
+
+    speech.say("a phrase loud enough to measure")
+    assert speech.wait(timeout=2)
+
+    assert levels, "on_level should have been called at least once"
+    assert all(level > 0 for level in levels), "a non-silent block should never read as zero"
