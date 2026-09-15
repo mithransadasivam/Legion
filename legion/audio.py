@@ -34,6 +34,32 @@ def microphone_name(device: int | str | None, sample_rate: int) -> str:
         ) from None
 
 
+def find_input_device(name: str, sample_rate: int) -> int | None:
+    """The device number of the MME input device whose name contains ``name``, or None if nothing
+    matching is connected right now.
+
+    Built for reconnecting a Bluetooth headset mid-session: its device number can change on
+    reconnect, but its name doesn't, so polling this instead of a fixed number survives that. MME
+    specifically, because the same physical microphone shows up once per Windows host API (MME,
+    DirectSound, WASAPI, WDM-KS) -- matching by name alone finds several and raises an ambiguity
+    error rather than picking one -- and MME has been the one that reliably resamples to Legion's
+    16 kHz; WASAPI and WDM-KS have both rejected some devices outright.
+    """
+    needle = name.lower()
+    host_apis = sd.query_hostapis()
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] < 1 or needle not in device["name"].lower():
+            continue
+        if host_apis[device["hostapi"]]["name"] != "MME":
+            continue
+        try:
+            sd.check_input_settings(device=index, channels=1, dtype="float32", samplerate=sample_rate)
+        except (ValueError, sd.PortAudioError):
+            continue
+        return index
+    return None
+
+
 def record_until_enter(sample_rate: int, device: int | str | None = None) -> np.ndarray:
     """Record mono audio until the user presses Enter."""
     blocks: list[np.ndarray] = []

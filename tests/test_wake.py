@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from legion.wake import Endpointer, phrase
@@ -55,3 +56,39 @@ class TestEndpointer:
 )
 def test_the_phrase_to_say_comes_from_the_model_name(model, expected):
     assert phrase(model) == expected
+
+
+class TestStopCheck:
+    def test_stop_check_ends_the_wait_before_the_wake_word_fires(self):
+        from legion.wake import WakeWord
+
+        wake = WakeWord.__new__(WakeWord)  # bypass __init__, which loads real models
+        wake._detector = type("D", (), {"reset": lambda self: None, "predict": lambda self, f: {"m": 0.0}})()
+        wake._vad = type("V", (), {"reset_states": lambda self: None})()
+        wake._threshold = 0.5
+
+        calls = []
+        def stop_after_three():
+            calls.append(1)
+            return len(calls) > 3
+
+        result = wake.hear(iter([object()] * 1000), stop_check=stop_after_three)
+
+        assert result is None
+        assert len(calls) == 4, "should stop checking (and iterating frames) the moment it returns True"
+
+    def test_stop_check_is_never_consulted_once_the_command_recording_has_started(self):
+        # Cutting the user off mid-command would be worse than letting this call finish.
+        # wake_first=False skips straight to command-recording, as a cut-in already does.
+        from legion.wake import WakeWord
+
+        wake = WakeWord.__new__(WakeWord)
+        wake._detector = type("D", (), {"reset": lambda self: None})()
+        wake._vad = type("V", (), {"reset_states": lambda self: None, "predict": lambda self, f, frame_size: 0.0})()
+        wake._threshold = 0.5
+
+        stop_check = lambda: True  # would end the call immediately if it were still being checked
+
+        result = wake.hear(iter([np.zeros(1280, dtype=np.int16)] * 3), wake_first=False, stop_check=stop_check)
+
+        assert result is not None, "the command-recording phase should not be cut short by stop_check"

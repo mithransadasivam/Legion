@@ -82,12 +82,13 @@ class WakeWord:
         on_wake: Callable[[], None] | None = None,
         wake_first: bool = True,
         on_level: Callable[[float], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ) -> np.ndarray:
         """Wait for the wake word, unless ``wake_first`` is False, then return the command that follows it."""
         import sounddevice as sd
 
         with sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=FRAME) as stream:
-            command = self.hear(_frames(stream), on_wake, wake_first, on_level)
+            command = self.hear(_frames(stream), on_wake, wake_first, on_level, stop_check)
         return command if command is not None else np.zeros(0, dtype=np.float32)
 
     def hear(
@@ -96,12 +97,16 @@ class WakeWord:
         on_wake: Callable[[], None] | None = None,
         wake_first: bool = True,
         on_level: Callable[[float], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ) -> np.ndarray | None:
         """The command spoken after the wake word, as 16 kHz float audio.
 
-        Empty if the user woke Legion and then said nothing; None if the frames ran out before it woke.
-        ``on_level`` is called with a 0..1 loudness estimate for every frame after the wake word,
-        for driving a live meter — not before it, since a HUD showing "idle" has nothing to meter yet.
+        Empty if the user woke Legion and then said nothing; None if the frames ran out before it
+        woke, or ``stop_check`` returned True first. ``on_level`` is called with a 0..1 loudness
+        estimate for every frame after the wake word, for driving a live meter — not before it,
+        since a HUD showing "idle" has nothing to meter yet. ``stop_check`` is polled once per
+        frame, but only while still waiting for the wake word: once the user is actually talking,
+        cutting them off mid-command would be worse than letting this call finish.
         """
         # Imported here, not at module scope, so importing wake.py never pulls in Piper's chain
         # (legion.audio imports Synthesizer) just to reach a small pure function.
@@ -111,6 +116,8 @@ class WakeWord:
         self._vad.reset_states()
         if wake_first:
             for frame in frames:
+                if stop_check and stop_check():
+                    return None
                 if max(self._detector.predict(frame).values()) >= self._threshold:
                     break
             else:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
+import time
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
 
     from legion.audio import SpeechQueue
     from legion.gui import Hud
+    from legion.stt import Transcriber
     from legion.wake import WakeWord
 
 # Set only while the GUI window is running, so the search/memory announce hooks below -- shared
@@ -226,13 +229,15 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
 def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
     """The conversation shown in a HUD window instead of the terminal.
 
-    With --text, the window's own input box replaces the microphone and the wake word entirely --
-    no headset needed, nothing typed into the terminal, and the window still shows Legion really
-    thinking and speaking, not just answering. Otherwise it's the same hands-free conversation as
-    --wake.
+    With --text, the window's own input box is the only way in: no microphone is ever touched.
+    Otherwise both the wake word and the input box work at once -- say "hey jarvis" or type,
+    whichever's easier at the time -- and a background watcher re-detects the microphone every
+    couple of seconds, so reconnecting a headset partway through a session picks it back up
+    without restarting Legion. Point --mic at a name rather than a number for that to survive a
+    reconnect: Windows can hand a reconnected device a new number, but its name doesn't change.
 
-    No cut-in yet in voice mode: without a keyboard, "say the wake word again to interrupt" would
-    need a second mic stream open during playback. Left for later; Legion just finishes speaking first.
+    No cut-in yet: interrupting Legion mid-reply isn't supported from either the wake word or the
+    box.
     """
     from legion.audio import SpeechQueue
     from legion.gui import run
@@ -248,66 +253,123 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
     wake = None
     transcriber = None
     if args.text:
-        mic_label = "(typed, no microphone)"
         print("Opening the Legion window. Type into it; close the window to quit.")
     else:
-        from legion.audio import microphone_name
-        from legion.stt import SAMPLE_RATE, Transcriber
+        from legion.stt import Transcriber
         from legion.wake import WakeWord
 
-        mic_label = microphone_name(args.mic, SAMPLE_RATE)
-        print(f"Microphone: {mic_label}")
+        # These don't need a microphone to exist yet -- only actually listening does, and that's
+        # handled by _voice_watcher, which tolerates one not being connected at all.
         print("Loading speech recognition...", flush=True)
         transcriber = Transcriber(args.whisper)
         print("Loading wake word...", flush=True)
         wake = WakeWord(args.wake_model, args.wake_threshold)
-        print(f'Opening the Legion window. Say "{wake.phrase}" to talk; close the window to quit.')
+        print(f'Opening the Legion window. Say "{wake.phrase}" or type; close the window to quit.')
 
     def worker(hud: Hud) -> None:
         global _active_hud
         _active_hud = hud
         speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
-        hud.set_config(
-            model=args.model,
-            host=args.host,
-            mic=mic_label,
-            voice=args.voice,
-            wake_phrase=wake.phrase if wake else "(typing)",
-            can_type=wake is None,
-        )
+        hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase=wake.phrase if wake else "(typing only)")
+
+        busy = threading.Event()
+        if wake:
+            threading.Thread(target=_voice_watcher, args=(args.mic, wake, transcriber, hud, busy), daemon=True).start()
+        else:
+            hud.set_mic("(typing only, no microphone)")
+
         try:
             while True:
                 hud.set_state("idle")
-                if wake:
-                    hud.set_readout("STANDBY", f'Say "{wake.phrase}" to talk.')
-                    heard = wake.listen(args.mic, on_wake=lambda: hud.set_state("listening"), on_level=hud.set_level)
-                    if heard.size == 0:
-                        continue
-                    hud.set_level(0)
-                    hud.set_state("thinking")
-                    hud.set_readout("PROCESSING", "")
-                    text = transcriber.transcribe(heard)
-                    if not text:
-                        hud.set_readout("STANDBY", "(Didn't catch that.)")
-                        continue
-                    print(f"You: {text}")
-                else:
-                    hud.set_readout("STANDBY", "Type your question above, then press Enter.")
-                    text = hud.wait_for_input()
-                    if not text:
-                        continue
-                    hud.set_state("thinking")
-                    print(f"You: {text}")
+                hud.set_readout(
+                    "STANDBY",
+                    f'Say "{wake.phrase}" or type above.' if wake else "Type your question above, then press Enter.",
+                )
+                text = hud.wait_for_input()
+                if not text:
+                    continue
+                busy.set()
+                hud.set_state("thinking")
+                print(f"You: {text}")
                 hud.set_readout("HEARD", text)
                 _respond(brain, text, speech, hud=hud)
                 if speech:
                     speech.wait()
                 hud.set_level(0)
+                busy.clear()
         except KeyboardInterrupt:
             # gui.run() always closes the window once this function returns, either way.
             print("\nStanding down.")
 
     run(worker)
+
+
+_MIC_POLL_SECONDS = 2.0
+
+
+def _voice_watcher(
+    mic_arg: int | str | None,
+    wake: WakeWord,
+    transcriber: Transcriber,
+    hud: Hud,
+    busy: threading.Event,
+) -> None:
+    """Runs for the life of the window: re-detects the microphone every couple of seconds and
+    listens for the wake word whenever one is connected, pushing anything transcribed into the
+    same queue the input box uses. Backs off and retries on any error, which is what actually
+    happens when a Bluetooth headset disconnects mid-recording, and pauses around a reply already
+    in progress rather than letting two conversations run at once.
+    """
+    while True:
+        if busy.is_set():
+            time.sleep(_MIC_POLL_SECONDS)
+            continue
+        device, label = _resolve_mic(mic_arg)
+        if device is None:
+            hud.set_mic("(none detected)")
+            time.sleep(_MIC_POLL_SECONDS)
+            continue
+        hud.set_mic(label)
+        try:
+            heard = wake.listen(
+                device,
+                on_wake=lambda: hud.set_state("listening"),
+                on_level=hud.set_level,
+                stop_check=busy.is_set,
+            )
+        except Exception:
+            hud.set_level(0)
+            time.sleep(_MIC_POLL_SECONDS)
+            continue
+        hud.set_level(0)
+        if heard.size == 0:
+            continue
+        hud.set_state("thinking")
+        hud.set_readout("PROCESSING", "")
+        text = transcriber.transcribe(heard)
+        if not text:
+            hud.set_state("idle")
+            hud.set_readout("STANDBY", "(Didn't catch that.)")
+            continue
+        hud.submit(text)
+
+
+def _resolve_mic(mic_arg: int | str | None) -> tuple[int | str | None, str] | tuple[None, None]:
+    """The current device for ``mic_arg`` and its display name, or (None, None) if it's not there
+    right now. A name is re-searched by name each time, so a reconnect landing on a new device
+    number is still found; a number or the system default is just tried as given."""
+    from legion.audio import find_input_device, microphone_name
+    from legion.stt import SAMPLE_RATE
+
+    if isinstance(mic_arg, str):
+        device = find_input_device(mic_arg, SAMPLE_RATE)
+        if device is None:
+            return None, None
+        return device, microphone_name(device, SAMPLE_RATE)
+    try:
+        return mic_arg, microphone_name(mic_arg, SAMPLE_RATE)
+    except RuntimeError:
+        return None, None
 
 
 def _wait_unless_cut_in(speech: SpeechQueue) -> bool:

@@ -38,14 +38,17 @@ class TestHud:
         hud, window = Hud(), FakeWindow()
         hud.attach(window)
 
-        hud.set_config(
-            model="llama3.2:3b", host="http://127.0.0.1:11434", mic="XM4",
-            voice="en_GB-alan-medium", wake_phrase="hey jarvis", can_type=True,
-        )
+        hud.set_config(model="llama3.2:3b", host="http://127.0.0.1:11434", voice="en_GB-alan-medium", wake_phrase="hey jarvis")
 
-        assert window.calls == [
-            'setConfig("llama3.2:3b", "http://127.0.0.1:11434", "XM4", "en_GB-alan-medium", "hey jarvis", true)'
-        ]
+        assert window.calls == ['setConfig("llama3.2:3b", "http://127.0.0.1:11434", "en_GB-alan-medium", "hey jarvis")']
+
+    def test_set_mic_calls_the_page_s_setmic(self):
+        hud, window = Hud(), FakeWindow()
+        hud.attach(window)
+
+        hud.set_mic("Headset (WH-1000XM4)")
+
+        assert window.calls == ['setMic("Headset (WH-1000XM4)")']
 
     def test_a_dead_window_does_not_crash_the_caller(self):
         class DeadWindow:

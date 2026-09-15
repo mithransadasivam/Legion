@@ -134,7 +134,6 @@
   }
   .command input::placeholder{color:var(--text-low);}
   .command input:disabled{cursor:not-allowed;}
-  .command[hidden]{display:none;}
 
   .telemetry{
     display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;
@@ -175,7 +174,7 @@
     <div class="bars" id="bars" aria-hidden="true"></div>
   </div>
 
-  <label class="command" id="command" hidden>
+  <label class="command" id="command">
     <span class="prompt">&gt;</span>
     <input type="text" id="commandInput" placeholder="Type your question, then press Enter" autocomplete="off">
   </label>
@@ -323,13 +322,15 @@
 
   // The API Python drives. Each function is safe to call at any time, including before the
   // first animation frame, since it only ever writes into state that draw() reads each frame.
-  window.setConfig = function(model, host, mic, voice, wakePhrase, canType){
+  window.setConfig = function(model, host, voice, wakePhrase){
     document.getElementById('modelVal').textContent = model;
     document.getElementById('hostVal').textContent = host;
-    document.getElementById('micVal').textContent = mic;
     document.getElementById('voiceVal').textContent = voice;
     document.getElementById('wakeVal').textContent = '"' + wakePhrase + '"';
-    document.getElementById('command').hidden = !canType;
+  };
+
+  window.setMic = function(status){
+    document.getElementById('micVal').textContent = status;
   };
 
   window.setState = function(mode){

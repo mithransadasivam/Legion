@@ -42,8 +42,12 @@ class Hud:
         except queue.Empty:
             return None
 
-    def set_config(self, *, model: str, host: str, mic: str, voice: str, wake_phrase: str, can_type: bool) -> None:
-        self._call("setConfig", model, host, mic, voice, wake_phrase, can_type)
+    def set_config(self, *, model: str, host: str, voice: str, wake_phrase: str) -> None:
+        self._call("setConfig", model, host, voice, wake_phrase)
+
+    def set_mic(self, status: str) -> None:
+        """The microphone's current status -- a name, or something like "(none detected)"."""
+        self._call("setMic", status)
 
     def set_state(self, mode: str) -> None:
         self._call("setState", mode)

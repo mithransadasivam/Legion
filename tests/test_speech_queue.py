@@ -131,3 +131,50 @@ def test_on_level_is_called_with_the_level_of_each_block_played(played):
 
     assert levels, "on_level should have been called at least once"
     assert all(level > 0 for level in levels), "a non-silent block should never read as zero"
+
+
+class TestFindInputDevice:
+    @pytest.fixture
+    def devices(self, monkeypatch):
+        """A small fake device table: the same physical mic listed once per host API, matching
+        what Windows actually reports -- only the MME entry should ever be picked."""
+        table = [
+            {"name": "Speakers", "max_input_channels": 0, "hostapi": 0},
+            {"name": "Headset (WH-1000XM4 Hands-Free)", "max_input_channels": 1, "hostapi": 0},  # MME
+            {"name": "Headset (WH-1000XM4 Hands-Free AG Audio)", "max_input_channels": 1, "hostapi": 1},  # DirectSound
+            {"name": "Headset (WH-1000XM4 Hands-Free AG Audio)", "max_input_channels": 1, "hostapi": 2},  # WASAPI
+            {"name": "Microphone (Realtek)", "max_input_channels": 2, "hostapi": 0},  # MME, wrong device
+        ]
+        apis = [{"name": "MME"}, {"name": "Windows DirectSound"}, {"name": "Windows WASAPI"}]
+        rejects_16k = {2}  # WASAPI entry rejects Legion's sample rate, matching real hardware this week
+
+        def check(device, channels, dtype, samplerate):
+            if device in rejects_16k:
+                raise audio.sd.PortAudioError("rejected")
+
+        monkeypatch.setattr(audio.sd, "query_devices", lambda: table)
+        monkeypatch.setattr(audio.sd, "query_hostapis", lambda: apis)
+        monkeypatch.setattr(audio.sd, "check_input_settings", check)
+        return table
+
+    def test_only_the_mme_entry_is_returned_even_though_the_name_matches_three_devices(self, devices):
+        assert audio.find_input_device("XM4", 16000) == 1
+
+    def test_matching_is_case_insensitive(self, devices):
+        assert audio.find_input_device("xm4", 16000) == 1
+
+    def test_a_name_that_matches_nothing_returns_none(self, devices):
+        assert audio.find_input_device("nonexistent headset", 16000) is None
+
+    def test_a_device_that_rejects_the_sample_rate_is_skipped(self, devices, monkeypatch):
+        # Move the MME match to the one that rejects 16 kHz, and confirm it's passed over rather
+        # than returned anyway.
+        monkeypatch.setattr(
+            audio.sd, "check_input_settings",
+            lambda device, channels, dtype, samplerate: (_ for _ in ()).throw(audio.sd.PortAudioError("no"))
+            if device == 1 else None,
+        )
+        assert audio.find_input_device("XM4", 16000) is None
+
+    def test_output_only_devices_are_never_matched(self, devices):
+        assert audio.find_input_device("Speakers", 16000) is None
