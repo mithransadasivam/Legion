@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         brain.load()
         if memory:
             print(f"Memory: {len(memory.notes)} notes in {args.memory}")
+        if args.phone and not args.ask:
+            _start_phone_server(args, web)
         if args.ask:
             return _answer_recording(args, brain)
         if args.gui:
@@ -123,6 +125,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="wake word: a built-in name, or the path to a custom .onnx model (default: %(default)s)",
     )
     parser.add_argument(
+        "--phone",
+        action="store_true",
+        default=os.environ.get("LEGION_PHONE") == "1",
+        help="also serve a tap-to-talk page for a phone on the same WiFi, alongside whatever else runs",
+    )
+    parser.add_argument(
+        "--phone-port",
+        type=int,
+        default=int(os.environ.get("LEGION_PHONE_PORT", "8420")),
+        help="port for --phone's page (default: %(default)s)",
+    )
+    parser.add_argument(
         "--wake-threshold",
         type=float,
         default=float(os.environ.get("LEGION_WAKE_THRESHOLD", "0.5")),
@@ -166,6 +180,35 @@ def _start_speech(voice: str) -> SpeechQueue:
 
     print("Loading voice...", flush=True)
     return SpeechQueue(Synthesizer(voice))
+
+
+def _start_phone_server(args: argparse.Namespace, web: Callable[[str], object] | None) -> None:
+    """Starts legion.phone's server on a background thread, so it runs alongside whatever else
+    --phone was combined with -- the GUI, the terminal, either.
+
+    Its own Brain and Memory, not the ones any other mode is using: a phone request runs on this
+    background thread, and Brain's conversation history isn't safe to mutate from two threads at
+    once. The trade-off is real but small -- the phone and, say, the desktop HUD keep separate
+    conversations, and a fact learned on one isn't visible to the other's in-memory notes until
+    restarted, though both still write to the same memory file.
+    """
+    from legion.phone import build_app, lan_address
+    from legion.phone import run as run_phone_server
+    from legion.stt import Transcriber
+    from legion.tts import Synthesizer
+
+    print("Loading phone server...", flush=True)
+    phone_memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
+    phone_brain = Brain(model=args.model, host=args.host, lookup=web, memory=phone_memory)
+    transcriber = Transcriber(args.whisper)
+    synthesizer = None if args.quiet else Synthesizer(args.voice)
+    phone_app = build_app(phone_brain, transcriber, synthesizer, model=args.model, host=args.host)
+
+    address = lan_address()
+    print(f'Phone: open "http://{address}:{args.phone_port}" on a device on the same WiFi.', flush=True)
+    threading.Thread(
+        target=run_phone_server, args=(phone_app,), kwargs={"port": args.phone_port}, daemon=True
+    ).start()
 
 
 def _text_loop(brain: Brain, speech: SpeechQueue | None) -> None:

@@ -60,6 +60,8 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **It can show what it's doing instead of just printing it.** `--gui` opens a small window — a tactical HUD around a living core, styled after JARVIS's own on-screen presence in the films — instead of running in the terminal. The core's motion and the amplitude bars beside it are driven by the real microphone and speaker levels, not a canned animation, and the readout shows what Legion heard and what it's saying as it says it. It's built as one static HTML/JS file in [`legion/hud/`](legion/hud/index.html), shown in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows), and driven from Python by [`Hud`](legion/gui.py) calling straight into the page's own `setState`/`setLevel`/`setReadout` functions — no server, no build step, no second language. `--gui` runs hands-free by default: greet it *or* type into the window's own command line, whichever's easier at the time — both land on the same queue, so either one gets a real reply. A background watcher re-detects the microphone every couple of seconds, so reconnecting a headset partway through a session picks it back up without restarting Legion; verified against a fake device table whose headset gets a *different* device number on reconnect, the way Windows actually behaves, and separately against the real one connected while testing. Point `--mic` at a name rather than a number for that to survive a reconnect — a number is only ever tried as-is, and Windows can hand a reconnected device a new one. `--gui --text` skips the microphone entirely: lighter to start, and useful when there's never going to be a headset. Either way, the terminal is only for launching Legion — typing into the window calls straight back into Python through pywebview's `js_api`, landing on a queue [`Hud.wait_for_input`](legion/gui.py) blocks on.
 
+**It can run on your phone, sort of.** `--phone` doesn't put any of the AI on the phone — Whisper, Ollama, and Piper stay right where they are, on this machine — it just serves a tap-to-talk page at your PC's address on the local network, so a phone becomes a remote control rather than a second brain. Tap the core, ask something, tap again to send; the recording is uploaded, transcribed, answered, and spoken back, the same pipeline as everywhere else. It's tap-to-talk on purpose, the same deliberate start/stop as pressing Enter on the desktop, so it needs no wake word or VAD at all. Real constraints, not glossed over: it only works while this machine is on, Ollama's running, and the phone's on the same WiFi — and it keeps its own conversation and its own copy of memory's notes, separate from whatever the desktop is doing at the same time, so a Brain object is never mutated from two threads at once; a fact learned on one only reaches the other's notes after a restart, though both write to the same file. `--phone` runs alongside whatever else you're already using — combine it with `--gui`, or run it alone. The one manual step: the first time it starts listening on the network, Windows will likely ask whether to allow it through the firewall for private networks — say yes, or the phone can't reach it. Verified with a real recording of "what is the capital of France?" — real Whisper transcription, a real Ollama reply, a real Piper WAV handed back — and separately confirmed reachable from this machine's own LAN address, not just `localhost`.
+
 ## Setup
 
 Requires macOS, Linux, or Windows with Python 3.11+. The commands below are for macOS with [Homebrew](https://brew.sh).
@@ -89,6 +91,7 @@ uv run legion --wake              # hands-free: say "hey jarvis" to talk, instea
 uv run legion --gui               # a HUD window; greet it or type, and reconnects are detected
 uv run legion --gui --mic XM4     # same, but pointed at a mic by name, so a reconnect survives
 uv run legion --gui --text        # the HUD window, no microphone loaded at all
+uv run legion --gui --phone       # the HUD window, plus a tap-to-talk page for a phone on the same WiFi
 uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
 ```
 
@@ -131,6 +134,8 @@ Every option can also be set with an environment variable.
 | `--wake-model` | `LEGION_WAKE_MODEL` | `hey_jarvis` (only affects `--wake`, not `--gui`) |
 | `--wake-threshold` | `LEGION_WAKE_THRESHOLD` | `0.5` (only affects `--wake`, not `--gui`) |
 | `--gui` | `LEGION_GUI=1` | off (terminal); always greeting-based, not `--wake-model` |
+| `--phone` | `LEGION_PHONE=1` | off |
+| `--phone-port` | `LEGION_PHONE_PORT` | `8420` |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
@@ -156,6 +161,8 @@ legion/
 ├── greeting.py  Decides whether a transcription was addressed to Legion, for --gui's greeting mode
 ├── gui.py       Drives the HUD window from Python
 ├── hud/         The HUD itself: one static HTML/CSS/JS file, shown by pywebview
+├── phone.py     A small bottle server so a phone on the same WiFi can talk to Legion
+├── phone/       The tap-to-talk page phone.py serves
 ├── search.py    Decides when to check the web, and formats what comes back
 ├── memory.py    Notes about the user that last between sessions
 ├── keys.py      Non-blocking Enter detection, for cutting in mid-reply

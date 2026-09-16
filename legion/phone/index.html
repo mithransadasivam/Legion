@@ -1,0 +1,344 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Legion</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --ground:#0a0d13;
+    --panel:#0d1219;
+    --panel-line:#1b2530;
+    --steel:#3d4c5c;
+    --steel-dim:#232e39;
+    --ice:191,232,255;
+    --amber:255,156,70;
+    --danger:255,90,90;
+    --text-hi:#eaf3fb;
+    --text-mid:#8fa3b5;
+    --text-low:#4c6070;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--ground);
+    color:var(--text-hi);
+    font-family:'Chakra Petch',sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overscroll-behavior:none;
+    user-select:none;
+  }
+  .stage{
+    width:100%;
+    height:100%;
+    max-width:480px;
+    padding:calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .topbar{
+    display:flex;justify-content:space-between;align-items:baseline;
+    padding-bottom:12px;border-bottom:1px solid var(--panel-line);flex-shrink:0;
+  }
+  .mark{font-weight:700;font-size:18px;letter-spacing:0.12em;}
+  .sub{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--text-low);letter-spacing:0.1em;}
+
+  .stage-area{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;}
+  .orb{position:relative;width:min(66vw,300px);aspect-ratio:1/1;}
+  .bracket{position:absolute;width:20px;height:20px;border-color:var(--steel);border-style:solid;border-width:0;opacity:0.85;}
+  .bracket.tl{top:-12px;left:-12px;border-top-width:2px;border-left-width:2px;}
+  .bracket.tr{top:-12px;right:-12px;border-top-width:2px;border-right-width:2px;}
+  .bracket.bl{bottom:-12px;left:-12px;border-bottom-width:2px;border-left-width:2px;}
+  .bracket.br{bottom:-12px;right:-12px;border-bottom-width:2px;border-right-width:2px;}
+  .ring{position:absolute;inset:5%;animation:spin 40s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .ring svg{width:100%;height:100%;}
+  button.core{
+    position:absolute;inset:12%;border-radius:50%;
+    border:none;background:transparent;padding:0;cursor:pointer;
+    -webkit-appearance:none;
+  }
+  canvas#core{width:100%;height:100%;border-radius:50%;display:block;}
+  .state-label{
+    position:absolute;bottom:-8px;left:50%;transform:translate(-50%,100%);
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.24em;
+    color:rgb(var(--ice));white-space:nowrap;transition:color 0.3s ease;
+  }
+  .state-label.thinking{color:rgb(var(--amber));}
+  .state-label.recording{color:rgb(var(--danger));}
+  .state-label.speaking{color:var(--text-hi);}
+
+  .readout{
+    min-height:64px;flex-shrink:0;
+    border:1px solid var(--panel-line);background:var(--steel-dim);
+    padding:10px 14px;display:flex;flex-direction:column;gap:6px;justify-content:center;
+    font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.4;
+    max-height:30vh;overflow-y:auto;
+  }
+  .readout .you{color:var(--text-mid);}
+  .readout .legion{color:var(--text-hi);}
+  .readout .hint{color:var(--text-low);font-style:normal;}
+
+  .footer{
+    display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;
+    font-size:9.5px;color:var(--text-low);flex-shrink:0;letter-spacing:0.06em;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="topbar">
+    <span class="mark">LEGION</span>
+    <span class="sub">MOBILE // TAP TO TALK</span>
+  </div>
+
+  <div class="stage-area">
+    <div class="orb">
+      <span class="bracket tl"></span><span class="bracket tr"></span>
+      <span class="bracket bl"></span><span class="bracket br"></span>
+      <div class="ring" id="ring"></div>
+      <button class="core" id="talkButton" aria-label="Tap to talk">
+        <canvas id="core" width="360" height="360"></canvas>
+      </button>
+      <span class="state-label" id="stateLabel">TAP TO TALK</span>
+    </div>
+  </div>
+
+  <div class="readout" id="readout">
+    <span class="hint">Tap the core, ask something, tap again to send.</span>
+  </div>
+
+  <div class="footer">
+    <span id="hostLabel">—</span>
+    <span id="modelLabel">—</span>
+  </div>
+</div>
+
+<script>
+(function(){
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const ringHost = document.getElementById('ring');
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', '0 0 100 100');
+  const R = 47;
+  for (let i = 0; i < 40; i++) {
+    const angle = (i / 40) * Math.PI * 2;
+    const long = i % 4 === 0;
+    const r1 = R, r2 = long ? R - 6 : R - 3;
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', 50 + Math.cos(angle) * r1);
+    line.setAttribute('y1', 50 + Math.sin(angle) * r1);
+    line.setAttribute('x2', 50 + Math.cos(angle) * r2);
+    line.setAttribute('y2', 50 + Math.sin(angle) * r2);
+    line.setAttribute('stroke', long ? '#4c6070' : '#232e39');
+    line.setAttribute('stroke-width', long ? 1.1 : 0.7);
+    svg.appendChild(line);
+  }
+  ringHost.appendChild(svg);
+
+  const STATES = {
+    idle:      { color: [191, 232, 255], glow: [191, 232, 255], radius: 40, spread: 16, speed: 0.12, count: 42 },
+    recording: { color: [255, 90, 90],   glow: [255, 120, 120], radius: 46, spread: 30, speed: 0.4,  count: 60 },
+    thinking:  { color: [255, 156, 70],  glow: [255, 180, 100], radius: 32, spread: 14, speed: 1.0,  count: 70 },
+    speaking:  { color: [242, 251, 255], glow: [255, 255, 255], radius: 48, spread: 24, speed: 0.55, count: 56 },
+  };
+
+  const canvas = document.getElementById('core');
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function resize() {
+    const size = canvas.clientWidth || 260;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  let particles = [];
+  function seed(n) {
+    particles = Array.from({ length: n }, () => ({
+      angle: Math.random() * Math.PI * 2, dist: Math.random(),
+      speed: Math.random() * 0.6 + 0.4, size: Math.random() * 1.8 + 0.9,
+    }));
+  }
+
+  let current = 'idle';
+  let t = 0;
+  let targetLevel = 0;
+  let level = 0;
+
+  function draw() {
+    const s = STATES[current];
+    const size = canvas.clientWidth || 260;
+    const cx = size / 2, cy = size / 2;
+    ctx.clearRect(0, 0, size, size);
+    level += (targetLevel - level) * 0.3;
+
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.52);
+    grad.addColorStop(0, `rgba(${s.glow.join(',')},0.30)`);
+    grad.addColorStop(1, `rgba(${s.glow.join(',')},0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+
+    const restingPulse = current === 'thinking' || current === 'speaking' ? (Math.sin(t * 8) * 0.25 + 0.75) : 1;
+    const amp = current === 'recording' ? (0.55 + level * 0.9) : restingPulse;
+
+    particles.forEach((p) => {
+      if (!reduceMotion) p.angle += s.speed * 0.012 * p.speed;
+      const r = (s.radius + s.spread * p.dist) * amp;
+      const x = cx + Math.cos(p.angle) * r, y = cy + Math.sin(p.angle) * r;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${s.color.join(',')},${0.45 + p.dist * 0.45})`;
+      ctx.arc(x, y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const coreR = s.radius * 0.46 * amp;
+    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(coreR, 1));
+    cg.addColorStop(0, 'rgba(255,255,255,0.95)');
+    cg.addColorStop(0.55, `rgba(${s.color.join(',')},0.85)`);
+    cg.addColorStop(1, `rgba(${s.color.join(',')},0)`);
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(coreR, 1), 0, Math.PI * 2);
+    ctx.fill();
+
+    t += 0.016;
+    requestAnimationFrame(draw);
+  }
+
+  const stateLabel = document.getElementById('stateLabel');
+  const readout = document.getElementById('readout');
+  const talkButton = document.getElementById('talkButton');
+  const ring = document.getElementById('ring');
+
+  function setState(mode, label) {
+    current = mode;
+    seed(STATES[mode].count);
+    targetLevel = 0;
+    stateLabel.textContent = label;
+    stateLabel.className = 'state-label ' + mode;
+    ring.style.animationDuration = mode === 'thinking' ? '9s' : mode === 'recording' ? '18s' : '40s';
+  }
+
+  function setReadout(html) {
+    readout.innerHTML = html;
+    readout.scrollTop = readout.scrollHeight;
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  seed(STATES.idle.count);
+  setState('idle', 'TAP TO TALK');
+  draw();
+
+  // -- recording -------------------------------------------------------------------
+  let mediaRecorder = null;
+  let audioContext = null;
+  let analyser = null;
+  let levelTimer = null;
+  let chunks = [];
+  let recording = false;
+
+  function startLevelMeter(stream) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    levelTimer = setInterval(() => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      targetLevel = Math.min(1, Math.sqrt(sum / data.length) * 4);
+    }, 60);
+  }
+
+  function stopLevelMeter() {
+    if (levelTimer) clearInterval(levelTimer);
+    if (audioContext) audioContext.close();
+    levelTimer = null; audioContext = null; analyser = null;
+    targetLevel = 0;
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        stopLevelMeter();
+        sendRecording(new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' }));
+      };
+      mediaRecorder.start();
+      startLevelMeter(stream);
+      recording = true;
+      setState('recording', 'LISTENING... TAP TO SEND');
+    } catch (err) {
+      setReadout('<span class="hint">Couldn\'t access the microphone: ' + err.message + '</span>');
+    }
+  }
+
+  function stopRecording() {
+    recording = false;
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  }
+
+  async function sendRecording(blob) {
+    setState('thinking', 'THINKING');
+    setReadout('<span class="hint">Sending...</span>');
+    try {
+      const form = new FormData();
+      form.append('audio', blob, 'question.webm');
+      const res = await fetch('/ask', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!data.heard) {
+        setReadout('<span class="hint">(Didn\'t catch that.)</span>');
+        setState('idle', 'TAP TO TALK');
+        return;
+      }
+      setReadout('<span class="you">You: ' + escapeHtml(data.heard) + '</span><span class="legion">Legion: ' + escapeHtml(data.reply) + '</span>');
+      if (data.audio) {
+        setState('speaking', 'SPEAKING');
+        const audio = new Audio('data:audio/wav;base64,' + data.audio);
+        audio.onended = () => setState('idle', 'TAP TO TALK');
+        audio.play();
+      } else {
+        setState('idle', 'TAP TO TALK');
+      }
+    } catch (err) {
+      setReadout('<span class="hint">Couldn\'t reach Legion: ' + err.message + '</span>');
+      setState('idle', 'TAP TO TALK');
+    }
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  talkButton.addEventListener('click', () => {
+    if (current === 'thinking' || current === 'speaking') return;
+    if (!recording) startRecording(); else stopRecording();
+  });
+
+  fetch('/config').then((r) => r.json()).then((cfg) => {
+    document.getElementById('hostLabel').textContent = cfg.host;
+    document.getElementById('modelLabel').textContent = cfg.model;
+  }).catch(() => {});
+})();
+</script>
+</body>
+</html>

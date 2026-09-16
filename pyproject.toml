@@ -5,6 +5,7 @@ description = "A local, offline voice assistant built on faster-whisper, Ollama,
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "bottle>=0.13.4",
     "ddgs>=9.16.0",
     "faster-whisper>=1.1",
     "huggingface-hub>=0.23",
