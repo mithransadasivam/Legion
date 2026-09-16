@@ -134,7 +134,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--phone-port",
         type=int,
         default=int(os.environ.get("LEGION_PHONE_PORT", "8420")),
-        help="port for --phone's page (default: %(default)s)",
+        help="port for --phone's plain-HTTP page, which explains the certificate step (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--phone-https-port",
+        type=int,
+        default=int(os.environ.get("LEGION_PHONE_HTTPS_PORT", "8443")),
+        help="port for --phone's HTTPS page, where the microphone actually works (default: %(default)s)",
     )
     parser.add_argument(
         "--wake-threshold",
@@ -183,17 +189,22 @@ def _start_speech(voice: str) -> SpeechQueue:
 
 
 def _start_phone_server(args: argparse.Namespace, web: Callable[[str], object] | None) -> None:
-    """Starts legion.phone's server on a background thread, so it runs alongside whatever else
+    """Starts legion.phone's servers on background threads, so they run alongside whatever else
     --phone was combined with -- the GUI, the terminal, either.
 
-    Its own Brain and Memory, not the ones any other mode is using: a phone request runs on this
-    background thread, and Brain's conversation history isn't safe to mutate from two threads at
+    Its own Brain and Memory, not the ones any other mode is using: a phone request runs on these
+    background threads, and Brain's conversation history isn't safe to mutate from two threads at
     once. The trade-off is real but small -- the phone and, say, the desktop HUD keep separate
     conversations, and a fact learned on one isn't visible to the other's in-memory notes until
     restarted, though both still write to the same memory file.
+
+    Two servers sharing one app: plain HTTP for the page that explains why the microphone won't
+    work yet and hands over a certificate, HTTPS -- the only way a browser exposes the
+    microphone at all outside a secure context -- for the real thing once that certificate is
+    trusted.
     """
-    from legion.phone import build_app, lan_address
-    from legion.phone import run as run_phone_server
+    from legion.memory import DEFAULT_FILE
+    from legion.phone import build_app, ensure_certificate, lan_address, run_http, run_https
     from legion.stt import Transcriber
     from legion.tts import Synthesizer
 
@@ -202,12 +213,20 @@ def _start_phone_server(args: argparse.Namespace, web: Callable[[str], object] |
     phone_brain = Brain(model=args.model, host=args.host, lookup=web, memory=phone_memory)
     transcriber = Transcriber(args.whisper)
     synthesizer = None if args.quiet else Synthesizer(args.voice)
-    phone_app = build_app(phone_brain, transcriber, synthesizer, model=args.model, host=args.host)
 
     address = lan_address()
+    cert_path, key_path = ensure_certificate(DEFAULT_FILE.parent, address)
+    https_url = f"https://{address}:{args.phone_https_port}"
+    phone_app = build_app(
+        phone_brain, transcriber, synthesizer, model=args.model, host=args.host,
+        https_url=https_url, cert_path=cert_path,
+    )
+
     print(f'Phone: open "http://{address}:{args.phone_port}" on a device on the same WiFi.', flush=True)
+    print(f'       first time only, it walks you through trusting a certificate for "{https_url}".', flush=True)
+    threading.Thread(target=run_http, args=(phone_app,), kwargs={"port": args.phone_port}, daemon=True).start()
     threading.Thread(
-        target=run_phone_server, args=(phone_app,), kwargs={"port": args.phone_port}, daemon=True
+        target=run_https, args=(phone_app, cert_path, key_path), kwargs={"port": args.phone_https_port}, daemon=True
     ).start()
 
 

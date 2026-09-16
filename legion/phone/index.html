@@ -90,6 +90,20 @@
     display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;
     font-size:9.5px;color:var(--text-low);flex-shrink:0;letter-spacing:0.06em;
   }
+
+  .setup{
+    border:1px solid rgb(var(--amber));background:rgba(255,156,70,0.08);
+    padding:14px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;
+    color:var(--text-hi);flex-shrink:0;
+  }
+  .setup .setup-title{
+    color:rgb(var(--amber));font-family:'Chakra Petch',sans-serif;font-weight:700;
+    letter-spacing:0.08em;font-size:13px;display:block;margin-bottom:8px;
+  }
+  .setup ol{margin:8px 0 0;padding-left:18px;}
+  .setup li{margin-bottom:6px;}
+  .setup a{color:rgb(var(--ice));}
+  .setup code{color:rgb(var(--ice));word-break:break-all;}
 </style>
 </head>
 <body>
@@ -99,7 +113,18 @@
     <span class="sub">MOBILE // TAP TO TALK</span>
   </div>
 
-  <div class="stage-area">
+  <div class="setup" id="setup" hidden>
+    <span class="setup-title">SECURE CONNECTION NEEDED</span>
+    Browsers only allow the microphone over a trusted connection. One-time setup:
+    <ol>
+      <li><a id="certLink" href="/legion-cert.cer">Download Legion's certificate</a></li>
+      <li>Install it: <b>Settings → General → VPN &amp; Device Management</b> → tap the downloaded profile → Install</li>
+      <li>Trust it: <b>Settings → General → About → Certificate Trust Settings</b> → turn on full trust for "Legion"</li>
+      <li>Come back here and open <code id="httpsHint">—</code> instead of this address</li>
+    </ol>
+  </div>
+
+  <div class="stage-area" id="stageArea">
     <div class="orb">
       <span class="bracket tl"></span><span class="bracket tr"></span>
       <span class="bracket bl"></span><span class="bracket br"></span>
@@ -334,9 +359,20 @@
     if (!recording) startRecording(); else stopRecording();
   });
 
+  // A browser simply doesn't expose navigator.mediaDevices at all outside a secure context --
+  // there's nothing to catch here, so this has to be checked before ever touching the mic.
+  if (!window.isSecureContext) {
+    document.getElementById('setup').hidden = false;
+    document.getElementById('stageArea').hidden = true;
+    document.getElementById('readout').hidden = true;
+  }
+
   fetch('/config').then((r) => r.json()).then((cfg) => {
     document.getElementById('hostLabel').textContent = cfg.host;
     document.getElementById('modelLabel').textContent = cfg.model;
+    // The certificate link stays on this page's own (HTTP) origin on purpose: navigating to the
+    // HTTPS one before it's trusted would just hit Safari's own warning page instead of downloading.
+    if (cfg.httpsUrl) document.getElementById('httpsHint').textContent = cfg.httpsUrl;
   }).catch(() => {});
 })();
 </script>

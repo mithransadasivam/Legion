@@ -13,7 +13,14 @@ import wave
 import bottle
 import pytest
 
-from legion.phone import build_app, lan_address
+from legion.phone import build_app, ensure_certificate, lan_address
+
+
+@pytest.fixture(scope="session")
+def certificate(tmp_path_factory):
+    """Generating a real RSA key pair isn't free; one certificate is plenty for every test here."""
+    cert_dir = tmp_path_factory.mktemp("legion-test-cert")
+    return ensure_certificate(cert_dir, "127.0.0.1")
 
 
 class FakeBrain:
@@ -50,15 +57,19 @@ class FakeSynthesizer:
 
 
 @pytest.fixture
-def server():
+def server(certificate):
     """Starts a real bottle server on a free port for one test, tearing it down afterward."""
     started = {}
+    cert_path, _key_path = certificate
 
     def start(brain=None, transcriber=None, synthesizer="default"):
         brain = brain if brain is not None else FakeBrain()
         transcriber = transcriber if transcriber is not None else FakeTranscriber()
         synthesizer = FakeSynthesizer() if synthesizer == "default" else synthesizer
-        app = build_app(brain, transcriber, synthesizer, model="llama3.2:3b", host="http://127.0.0.1:11434")
+        app = build_app(
+            brain, transcriber, synthesizer, model="llama3.2:3b", host="http://127.0.0.1:11434",
+            https_url="https://127.0.0.1:8443", cert_path=cert_path,
+        )
         wsgi_server = bottle.WSGIRefServer(host="127.0.0.1", port=0, quiet=True)
         thread = threading.Thread(target=wsgi_server.run, args=(app,), daemon=True)
         thread.start()
@@ -101,7 +112,9 @@ class TestRoutes:
         base_url, *_ = server()
 
         with urllib.request.urlopen(f"{base_url}/config") as response:
-            assert json.loads(response.read()) == {"model": "llama3.2:3b", "host": "http://127.0.0.1:11434"}
+            assert json.loads(response.read()) == {
+                "model": "llama3.2:3b", "host": "http://127.0.0.1:11434", "httpsUrl": "https://127.0.0.1:8443",
+            }
 
     def test_a_real_upload_is_transcribed_answered_and_spoken(self, server):
         base_url, brain, transcriber, synthesizer = server()
@@ -150,6 +163,78 @@ class TestRoutes:
 
         assert result["reply"] == "The capital of France is Paris, sir."
         assert result["audio"] is None
+
+    def test_the_certificate_download_is_a_real_x509_certificate(self, server):
+        from cryptography import x509
+
+        base_url, *_ = server()
+
+        with urllib.request.urlopen(f"{base_url}/legion-cert.cer") as response:
+            assert response.headers["Content-Type"] == "application/x-x509-ca-cert"
+            cert = x509.load_der_x509_certificate(response.read())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert "127.0.0.1" in {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
+
+    def test_the_page_works_the_same_way_served_over_https(self, server, certificate):
+        # The certificate isn't a real CA as far as urllib is concerned, so this simulates a phone
+        # that has already trusted it -- the point being tested is that HTTPS serves the same app.
+        import ssl
+
+        cert_path, key_path = certificate
+        app = build_app(
+            FakeBrain(), FakeTranscriber(), FakeSynthesizer(), model="m", host="h",
+            https_url="https://127.0.0.1:0", cert_path=cert_path,
+        )
+        from legion.phone import _SSLWSGIRefServer
+
+        wsgi_server = _SSLWSGIRefServer(cert_path, key_path, host="127.0.0.1", port=0, quiet=True)
+        thread = threading.Thread(target=wsgi_server.run, args=(app,), daemon=True)
+        thread.start()
+        try:
+            for _ in range(100):
+                if getattr(wsgi_server, "srv", None) is not None:
+                    break
+                time.sleep(0.02)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(f"https://127.0.0.1:{wsgi_server.port}/config", context=ctx) as response:
+                assert json.loads(response.read())["model"] == "m"
+        finally:
+            wsgi_server.srv.shutdown()
+
+
+class TestCertificate:
+    def test_a_freshly_generated_certificate_covers_the_address_it_was_made_for(self, tmp_path):
+        cert_path, key_path = ensure_certificate(tmp_path, "192.168.1.50")
+
+        from cryptography import x509
+
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert "192.168.1.50" in {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
+        assert key_path.exists()
+
+    def test_a_second_call_for_the_same_address_reuses_the_certificate(self, tmp_path):
+        first_cert, first_key = ensure_certificate(tmp_path, "192.168.1.50")
+        first_bytes = first_cert.read_bytes()
+
+        second_cert, second_key = ensure_certificate(tmp_path, "192.168.1.50")
+
+        assert second_cert.read_bytes() == first_bytes, "trusting the same certificate again shouldn't be required"
+
+    def test_a_reconnect_landing_on_a_different_ip_gets_a_new_certificate(self, tmp_path):
+        first_cert, _ = ensure_certificate(tmp_path, "192.168.1.50")
+        first_bytes = first_cert.read_bytes()
+
+        second_cert, _ = ensure_certificate(tmp_path, "192.168.1.99")
+
+        assert second_cert.read_bytes() != first_bytes
+        from cryptography import x509
+
+        cert = x509.load_pem_x509_certificate(second_cert.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert "192.168.1.99" in {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
 
 
 class TestLanAddress:
