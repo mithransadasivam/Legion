@@ -273,6 +273,25 @@
   let chunks = [];
   let recording = false;
 
+  // Safari only allows an <audio> element to actually produce sound if play() is called
+  // synchronously inside a user gesture. By the time the reply comes back, we're several
+  // async turns (fetch, JSON parsing) removed from the tap that started this, so a fresh
+  // `new Audio(...).play()` there gets silently rejected. Instead, one element is "unlocked"
+  // right inside the tap handler, then reused (just re-set .src and play() again) once the
+  // reply is ready -- Safari keeps allowing playback on an element it already granted.
+  // A one-sample silent WAV -- an element with no src at all fails to play immediately (there's
+  // nothing to decode), so it never actually starts and the gesture-linked unlock never sticks.
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+
+  let playbackAudio = null;
+  function unlockPlayback() {
+    if (playbackAudio) return;
+    playbackAudio = new Audio(SILENT_WAV);
+    playbackAudio.play().catch((err) => {
+      setReadout('<span class="hint">Playback unlock failed: ' + err.message + '</span>');
+    });
+  }
+
   function startLevelMeter(stream) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const source = audioContext.createMediaStreamSource(stream);
@@ -334,11 +353,14 @@
         return;
       }
       setReadout('<span class="you">You: ' + escapeHtml(data.heard) + '</span><span class="legion">Legion: ' + escapeHtml(data.reply) + '</span>');
-      if (data.audio) {
+      if (data.audio && playbackAudio) {
         setState('speaking', 'SPEAKING');
-        const audio = new Audio('data:audio/wav;base64,' + data.audio);
-        audio.onended = () => setState('idle', 'TAP TO TALK');
-        audio.play();
+        playbackAudio.onended = () => setState('idle', 'TAP TO TALK');
+        playbackAudio.src = 'data:audio/wav;base64,' + data.audio;
+        playbackAudio.play().catch((err) => {
+          setReadout('<span class="hint">Couldn\'t play reply: ' + err.message + '</span>');
+          setState('idle', 'TAP TO TALK');
+        });
       } else {
         setState('idle', 'TAP TO TALK');
       }
@@ -355,6 +377,7 @@
   }
 
   talkButton.addEventListener('click', () => {
+    unlockPlayback();
     if (current === 'thinking' || current === 'speaking') return;
     if (!recording) startRecording(); else stopRecording();
   });
