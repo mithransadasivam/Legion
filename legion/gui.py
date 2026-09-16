@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 _HUD_HTML = Path(__file__).parent / "hud" / "index.html"
+_ICON = Path(__file__).parent / "assets" / "legion.ico"
 
 
 class Hud:
@@ -101,4 +102,4 @@ def run(target: Callable[[Hud], None], *, width: int = 560, height: int = 780) -
             # since nothing else was ever going to close it.
             window.destroy()
 
-    webview.start(_start)
+    webview.start(_start, icon=str(_ICON) if _ICON.exists() else None)

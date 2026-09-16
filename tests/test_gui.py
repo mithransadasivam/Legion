@@ -131,7 +131,7 @@ def _fake_webview(window, create_window_calls=None):
             create_window_calls.append(kwargs)
         return window
 
-    return types.SimpleNamespace(create_window=create_window, start=lambda fn: fn())
+    return types.SimpleNamespace(create_window=create_window, start=lambda fn, **kwargs: fn())
 
 
 class TestRun:
