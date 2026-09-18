@@ -179,3 +179,29 @@ def test_a_fact_told_just_now_is_in_the_prompt_for_this_very_reply(sent, tmp_pat
     drain(brain, "My name is Mithran.")
 
     assert "The user's name is Mithran." in sent[0][0]["content"]
+
+
+def test_the_sir_reminder_comes_after_the_users_own_name_note(sent, tmp_path, monkeypatch):
+    # A name note this close to the question, read most recently, was winning out over the "call
+    # them sir" instruction stated once near the top of a much longer prompt -- Legion started
+    # using the user's first name every time instead. The fix relies on order, so this pins it.
+    from legion import memory as memory_module
+
+    class NoteTaker:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def chat(self, model, messages, options):
+            return SimpleNamespace(message=SimpleNamespace(content="The user's name is Mithran."))
+
+    chat_stub = memory_module.ollama.Client
+    monkeypatch.setattr(memory_module.ollama, "Client", NoteTaker)
+    memory = memory_module.Memory(tmp_path / "memory.txt", host="h", model="m")
+    monkeypatch.setattr(memory_module.ollama, "Client", chat_stub)
+    memory.learn("My name is Mithran.")
+    brain = Brain(model="m", host="h", memory=memory)
+
+    drain(brain, "What is the capital of Australia?")
+
+    prompt = sent[0][0]["content"]
+    assert prompt.rfind("sir") > prompt.rfind("Mithran"), "the sir reminder should be the last thing in the prompt"

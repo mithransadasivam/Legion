@@ -7,7 +7,7 @@ import ollama
 
 from legion.gcal import CALENDAR_NOT_CHECKED, CalendarCheck
 from legion.memory import Memory
-from legion.persona import CALENDAR_AWARE, SEARCH_SYSTEM_PROMPT, SYSTEM_PROMPT
+from legion.persona import CALENDAR_AWARE, SEARCH_SYSTEM_PROMPT, SIR, SYSTEM_PROMPT
 from legion.search import NOT_CHECKED, WebCheck
 from legion.text import speak_moment
 
@@ -87,7 +87,10 @@ class Brain:
         prompt = self._system_prompt + self._now_line()
         if self._calendar_lookup:
             prompt += CALENDAR_AWARE
-        return prompt + (self._memory.prompt() if self._memory else "")
+        if self._memory:
+            prompt += self._memory.prompt()
+        # SIR goes last, after even the user's own notes -- see its own docstring for why.
+        return prompt + SIR
 
     def _now_line(self) -> str:
         # A model this small has no reliable sense of "today" -- its notion of the date comes from
