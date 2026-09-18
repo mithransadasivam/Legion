@@ -212,3 +212,7 @@ claude-project/  An earlier, no-code version of Legion (see below)
 ## claude-project/
 
 Before this was code, Legion was a set of instructions for a [claude.ai Project](https://support.claude.com/en/articles/9517075-what-are-projects) — a deep-research persona you use in the Claude app. To set it up, create a Project on claude.ai, open **Set project instructions**, and paste in [`claude-project/legion-project-instructions.md`](claude-project/legion-project-instructions.md). `docs/` holds the original planning notes.
+
+## License
+
+This repository is shared for demonstration purposes only. See [LICENSE](LICENSE) — all rights reserved; no permission is granted to reuse, modify, or redistribute this code.
