@@ -39,6 +39,14 @@ def main(argv: list[str] | None = None) -> int:
     calendar = None
     if not args.no_calendar and args.calendar_credentials.exists():
         calendar = CalendarClient(args.calendar_credentials, args.calendar_token).lookup
+
+    if args.gui:
+        # Checking Ollama and loading the model can take a good while right after a reboot, and
+        # this is launched with no console to show it in -- so the window opens first and reports
+        # its own progress, instead of all of that happening silently before anyone can see it.
+        _gui_loop(args, web, calendar)
+        return 0
+
     try:
         memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
         brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
@@ -53,8 +61,6 @@ def main(argv: list[str] | None = None) -> int:
             _start_phone_server(args, web, calendar)
         if args.ask:
             return _answer_recording(args, brain)
-        if args.gui:
-            _gui_loop(args, brain)
         elif args.text:
             _text_loop(brain, None if args.quiet else _start_speech(args.voice))
         else:
@@ -321,8 +327,39 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
     return wake.listen(mic, on_wake=lambda: print("● Listening...", flush=True), wake_first=not cut_in)
 
 
-def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
+def _start_up(
+    args: argparse.Namespace,
+    web: Callable[[str], object] | None,
+    calendar: Callable[[str], object] | None,
+    hud: Hud,
+) -> Brain:
+    """Everything that has to happen before the GUI can answer its first question, reported to
+    the HUD as it goes rather than left to print() -- see _gui_loop for why."""
+    memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
+    brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
+    hud.set_readout("STARTING", "checking Ollama...")
+    brain.check()
+    hud.set_readout("STARTING", "loading the model...")
+    print("Loading model...", flush=True)
+    brain.load()
+    if memory:
+        print(f"Memory: {len(memory.notes)} notes in {args.memory}")
+    if calendar:
+        print(f"Calendar: enabled, using {args.calendar_credentials}")
+    if args.phone:
+        hud.set_readout("STARTING", "starting the phone server...")
+        _start_phone_server(args, web, calendar)
+    return brain
+
+
+def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, calendar: Callable[[str], object] | None) -> None:
     """The conversation shown in a HUD window instead of the terminal.
+
+    Everything slow -- checking Ollama, loading the model, loading speech recognition -- happens
+    only after the window is already open, reported through the HUD's own readout rather than
+    print(): launched from the hidden desktop shortcut, there's no console for print() to reach,
+    and a cold Ollama model load right after a reboot can take the better part of a minute with
+    nothing to show it's happening otherwise.
 
     With --text, the window's own input box is the only way in: no microphone is ever touched.
     Otherwise both a spoken greeting and the input box work at once -- say "hey", "hi", "legion",
@@ -341,30 +378,43 @@ def _gui_loop(args: argparse.Namespace, brain: Brain) -> None:
 
     global _active_hud
 
-    synthesizer = None
-    if not args.quiet:
-        print("Loading voice...", flush=True)
-        synthesizer = Synthesizer(args.voice)
-
-    wake = None
-    transcriber = None
-    if args.text:
-        print("Opening the Legion window. Type into it; close the window to quit.")
-    else:
-        from legion.stt import Transcriber
-        from legion.wake import WakeWord
-
-        # These don't need a microphone to exist yet -- only actually listening does, and that's
-        # handled by _voice_watcher, which tolerates one not being connected at all. model=None:
-        # no trained wake word, just the voice activity detector openWakeWord ships alongside one.
-        print("Loading speech recognition...", flush=True)
-        transcriber = Transcriber(args.whisper)
-        wake = WakeWord(model=None)
-        print('Opening the Legion window. Greet it ("hey", "hi", "legion", ...) or type; close the window to quit.')
-
     def worker(hud: Hud) -> None:
         global _active_hud
         _active_hud = hud
+        hud.set_state("thinking")
+        try:
+            brain = _start_up(args, web, calendar, hud)
+        except RuntimeError as exc:
+            # Nothing else can show this: there's no console, and the window would otherwise just
+            # vanish the instant this function returns, before anyone could read why.
+            hud.set_readout("ERROR", str(exc))
+            threading.Event().wait()
+            return
+
+        synthesizer = None
+        if not args.quiet:
+            print("Loading voice...", flush=True)
+            hud.set_readout("STARTING", "loading the voice...")
+            synthesizer = Synthesizer(args.voice)
+
+        wake = None
+        transcriber = None
+        if args.text:
+            print("Opening the Legion window. Type into it; close the window to quit.")
+        else:
+            from legion.stt import Transcriber
+            from legion.wake import WakeWord
+
+            # These don't need a microphone to exist yet -- only actually listening does, and
+            # that's handled by _voice_watcher, which tolerates one not being connected at all.
+            # model=None: no trained wake word, just the voice activity detector openWakeWord
+            # ships alongside one.
+            print("Loading speech recognition...", flush=True)
+            hud.set_readout("STARTING", "loading speech recognition...")
+            transcriber = Transcriber(args.whisper)
+            wake = WakeWord(model=None)
+            print('Opening the Legion window. Greet it ("hey", "hi", "legion", ...) or type; close the window to quit.')
+
         speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
         hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase="a greeting" if wake else "(typing only)")
 
