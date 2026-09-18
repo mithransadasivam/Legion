@@ -430,10 +430,9 @@ def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, cal
         try:
             while True:
                 hud.set_state("idle")
-                hud.set_readout(
-                    "STANDBY",
-                    'Say "hey", "hi", "legion" (or type above).' if wake else "Type your question above, then press Enter.",
-                )
+                # No readout reset here on purpose: the last reply stays on screen until the next
+                # question overwrites it, rather than being wiped back to a standby hint the moment
+                # each answer finishes.
                 heard = hud.wait_for_input()
                 if not heard:
                     continue
