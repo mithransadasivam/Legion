@@ -1,5 +1,6 @@
 """Conversation with a local model served by Ollama."""
 
+import datetime
 from collections.abc import Callable, Iterator
 
 import ollama
@@ -70,7 +71,17 @@ class Brain:
             del self._history[: -self._max_messages]
 
     def _prompt(self) -> str:
-        return self._system_prompt + (self._memory.prompt() if self._memory else "")
+        return self._system_prompt + self._now_line() + (self._memory.prompt() if self._memory else "")
+
+    def _now_line(self) -> str:
+        # A model this small has no reliable sense of "today" -- its notion of the date comes from
+        # whenever its training data was collected, which is why it guessed a day of the week that
+        # was already wrong. Telling it the real date and time, computed here rather than asked of
+        # the model, is the only way it can ever get this right.
+        now = datetime.datetime.now()
+        hour12 = now.hour % 12 or 12
+        ampm = "AM" if now.hour < 12 else "PM"
+        return f"\nRight now it's {now:%A}, {now:%B} {now.day}, {now.year}, {hour12}:{now.minute:02d} {ampm}.\n"
 
     def _look_up(self, text: str) -> WebCheck:
         return self._lookup(text) if self._lookup else NOT_CHECKED

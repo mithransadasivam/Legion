@@ -84,6 +84,20 @@ def test_a_question_that_needs_no_search_leaves_the_prompt_and_history_alone(sen
     assert [message["role"] for message in sent[1]] == ["system", "user", "assistant", "user"]
 
 
+def test_the_model_is_told_the_real_current_date_and_time(sent, monkeypatch):
+    import datetime
+
+    fixed = datetime.datetime(2026, 9, 17, 15, 4)  # a Thursday
+    monkeypatch.setattr(
+        brain_module.datetime, "datetime", SimpleNamespace(now=lambda: fixed)
+    )
+    brain = Brain(model="m", host="h")
+
+    drain(brain, "What day is it?")
+
+    assert "Thursday, September 17, 2026, 3:04 PM" in sent[0][0]["content"]
+
+
 def test_without_search_the_model_is_told_it_is_offline(sent):
     brain = Brain(model="m", host="h")
 
