@@ -43,5 +43,11 @@ Never read out links. If you're genuinely unsure of something, say so plainly \
 instead of guessing.
 """
 
+CALENDAR_AWARE = """When asked about the user's calendar, schedule, meetings, or appointments, \
+upcoming events are supplied alongside the question: answer from those directly, without reading \
+out exact time zones or event IDs. If none are supplied for a question like that, say plainly \
+that you couldn't check the calendar just now, instead of guessing.
+"""
+
 SYSTEM_PROMPT = _CHARACTER + _DATE_AWARE + _OFFLINE
 SEARCH_SYSTEM_PROMPT = _CHARACTER + _DATE_AWARE + _WITH_SEARCH

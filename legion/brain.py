@@ -5,9 +5,11 @@ from collections.abc import Callable, Iterator
 
 import ollama
 
+from legion.gcal import CALENDAR_NOT_CHECKED, CalendarCheck
 from legion.memory import Memory
-from legion.persona import SEARCH_SYSTEM_PROMPT, SYSTEM_PROMPT
+from legion.persona import CALENDAR_AWARE, SEARCH_SYSTEM_PROMPT, SYSTEM_PROMPT
 from legion.search import NOT_CHECKED, WebCheck
+from legion.text import speak_moment
 
 
 class Brain:
@@ -17,6 +19,7 @@ class Brain:
         host: str,
         max_turns: int = 8,
         lookup: Callable[[str], WebCheck] | None = None,
+        calendar_lookup: Callable[[str], CalendarCheck] | None = None,
         memory: Memory | None = None,
     ) -> None:
         self._client = ollama.Client(host=host)
@@ -25,9 +28,11 @@ class Brain:
         self._history: list[dict[str, str]] = []
         self._max_messages = max_turns * 2
         self._lookup = lookup
+        self._calendar_lookup = calendar_lookup
         self._system_prompt = SEARCH_SYSTEM_PROMPT if lookup else SYSTEM_PROMPT
         self._memory = memory
         self._last_web_record = ""
+        self._last_calendar_record = ""
 
     def check(self) -> None:
         """Raise RuntimeError with a fix-it hint if the server or model isn't available."""
@@ -56,9 +61,16 @@ class Brain:
             # for questions it never actually searched, having seen the pattern established earlier
             # in the same conversation.
             messages.insert(-1, {"role": "system", "content": self._last_web_record})
+        if self._last_calendar_record:
+            # Same one-turn honesty rule as the web record just above: kept any longer, the model
+            # starts telling later, unrelated questions that it checked the calendar for those too.
+            messages.insert(-1, {"role": "system", "content": self._last_calendar_record})
         web = self._look_up(text)
         if web.results:
             messages.insert(-1, {"role": "system", "content": web.results})
+        calendar = self._look_up_calendar(text)
+        if calendar.results:
+            messages.insert(-1, {"role": "system", "content": calendar.results})
         parts: list[str] = []
         try:
             for chunk in self._client.chat(model=self._model, messages=messages, stream=True):
@@ -67,21 +79,25 @@ class Brain:
                     yield token
         finally:
             self._last_web_record = web.record
+            self._last_calendar_record = calendar.record
             self._history.append({"role": "assistant", "content": "".join(parts)})
             del self._history[: -self._max_messages]
 
     def _prompt(self) -> str:
-        return self._system_prompt + self._now_line() + (self._memory.prompt() if self._memory else "")
+        prompt = self._system_prompt + self._now_line()
+        if self._calendar_lookup:
+            prompt += CALENDAR_AWARE
+        return prompt + (self._memory.prompt() if self._memory else "")
 
     def _now_line(self) -> str:
         # A model this small has no reliable sense of "today" -- its notion of the date comes from
         # whenever its training data was collected, which is why it guessed a day of the week that
         # was already wrong. Telling it the real date and time, computed here rather than asked of
         # the model, is the only way it can ever get this right.
-        now = datetime.datetime.now()
-        hour12 = now.hour % 12 or 12
-        ampm = "AM" if now.hour < 12 else "PM"
-        return f"\nRight now it's {now:%A}, {now:%B} {now.day}, {now.year}, {hour12}:{now.minute:02d} {ampm}.\n"
+        return f"\nRight now it's {speak_moment(datetime.datetime.now(), year=True)}.\n"
 
     def _look_up(self, text: str) -> WebCheck:
         return self._lookup(text) if self._lookup else NOT_CHECKED
+
+    def _look_up_calendar(self, text: str) -> CalendarCheck:
+        return self._calendar_lookup(text) if self._calendar_lookup else CALENDAR_NOT_CHECKED

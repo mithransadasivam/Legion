@@ -115,6 +115,50 @@ def test_with_search_the_model_is_told_results_will_be_supplied(sent):
     assert "web results are supplied" in sent[0][0]["content"]
 
 
+def test_calendar_results_are_handed_to_the_model_with_the_question(sent):
+    from legion.gcal import CalendarCheck
+
+    brain = Brain(
+        model="m", host="h",
+        calendar_lookup=lambda text: CalendarCheck("- Dentist: Thursday, 3:00 PM", "You checked the calendar to answer that."),
+    )
+
+    drain(brain, "What's on my calendar today?")
+
+    assert "Dentist" in sent[0][1]["content"]
+    assert "calendar" in sent[0][0]["content"].lower()
+
+
+def test_the_calendar_source_record_does_not_outlive_the_one_follow_up_it_is_for(sent):
+    from legion.gcal import CALENDAR_NOT_CHECKED, CalendarCheck
+
+    checks = iter(
+        [
+            CalendarCheck("- Dentist: Thursday, 3:00 PM", "You checked the calendar to answer that."),
+            CALENDAR_NOT_CHECKED,
+            CALENDAR_NOT_CHECKED,
+        ]
+    )
+    brain = Brain(model="m", host="h", calendar_lookup=lambda text: next(checks))
+
+    drain(brain, "What's on my calendar today?")
+    drain(brain, "Where did you get that from?")
+    drain(brain, "What is the capital of Australia?")
+
+    third_turn = sent[2]
+    assert not any("checked the calendar" in message["content"] for message in third_turn), (
+        "an unrelated later question should not be told that earlier answers came from the calendar"
+    )
+
+
+def test_without_a_calendar_lookup_the_model_is_not_told_it_has_one(sent):
+    brain = Brain(model="m", host="h")
+
+    drain(brain, "What's on my calendar today?")
+
+    assert "calendar" not in sent[0][0]["content"].lower()
+
+
 def test_a_fact_told_just_now_is_in_the_prompt_for_this_very_reply(sent, tmp_path, monkeypatch):
     from legion import memory as memory_module
 

@@ -1,5 +1,6 @@
 """Turns streamed model output into clean, speakable sentences."""
 
+import datetime
 import re
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])[\"')\]]*\s+|\n+")
@@ -18,6 +19,24 @@ def clean_for_speech(text: str) -> str:
     text = _MARKUP.sub("", text)
     text = _EMOJI.sub("", text)
     return " ".join(text.split())
+
+
+def speak_moment(moment: datetime.datetime, *, year: bool = False) -> str:
+    """A date and time the way a person would say it, not %Y-%m-%d %H:%M:%S -- no leading zero
+    on the hour or day, explicit AM/PM, and the year left out by default since it's rarely the
+    point of a spoken answer."""
+    hour12 = moment.hour % 12 or 12
+    ampm = "AM" if moment.hour < 12 else "PM"
+    base = f"{moment:%A}, {moment:%B} {moment.day}"
+    if year:
+        base += f", {moment.year}"
+    return f"{base}, {hour12}:{moment.minute:02d} {ampm}"
+
+
+def speak_date(day: datetime.date, *, year: bool = False) -> str:
+    """The date-only half of ``speak_moment``, for all-day events with no time to speak."""
+    base = f"{day:%A}, {day:%B} {day.day}"
+    return f"{base}, {day.year}" if year else base
 
 
 class SentenceBuffer:

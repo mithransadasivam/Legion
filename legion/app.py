@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from legion.brain import Brain
+from legion.gcal import CalendarClient
 from legion.memory import DEFAULT_FILE, Memory
 from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
@@ -35,16 +36,21 @@ _active_hud: Hud | None = None
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     web = None if args.no_search else partial(lookup, announce=_announce_search)
+    calendar = None
+    if not args.no_calendar and args.calendar_credentials.exists():
+        calendar = CalendarClient(args.calendar_credentials, args.calendar_token).lookup
     try:
         memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
-        brain = Brain(model=args.model, host=args.host, lookup=web, memory=memory)
+        brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
         brain.check()
         print("Loading model...", flush=True)
         brain.load()
         if memory:
             print(f"Memory: {len(memory.notes)} notes in {args.memory}")
+        if calendar:
+            print(f"Calendar: enabled, using {args.calendar_credentials}")
         if args.phone and not args.ask:
-            _start_phone_server(args, web)
+            _start_phone_server(args, web, calendar)
         if args.ask:
             return _answer_recording(args, brain)
         if args.gui:
@@ -169,6 +175,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=os.environ.get("LEGION_MEMORY", "1") == "0",
         help="don't remember anything between sessions, or take new notes",
     )
+    parser.add_argument(
+        "--calendar-credentials",
+        type=Path,
+        metavar="FILE",
+        default=Path(
+            os.environ.get("LEGION_CALENDAR_CREDENTIALS", DEFAULT_FILE.parent / "calendar_credentials.json")
+        ),
+        help="Google OAuth client secret JSON from Google Cloud Console; calendar access turns on "
+        "automatically once this file exists (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--calendar-token",
+        type=Path,
+        metavar="FILE",
+        default=Path(os.environ.get("LEGION_CALENDAR_TOKEN", DEFAULT_FILE.parent / "calendar_token.json")),
+        help="where the calendar sign-in is cached after the first time, so it isn't asked for again (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-calendar",
+        action="store_true",
+        default=os.environ.get("LEGION_CALENDAR", "1") == "0",
+        help="ignore calendar_credentials.json even if it's there",
+    )
 
     args = parser.parse_args(argv)
     if args.save and not args.ask:
@@ -188,7 +217,9 @@ def _start_speech(voice: str) -> SpeechQueue:
     return SpeechQueue(Synthesizer(voice))
 
 
-def _start_phone_server(args: argparse.Namespace, web: Callable[[str], object] | None) -> None:
+def _start_phone_server(
+    args: argparse.Namespace, web: Callable[[str], object] | None, calendar: Callable[[str], object] | None
+) -> None:
     """Starts legion.phone's servers on background threads, so they run alongside whatever else
     --phone was combined with -- the GUI, the terminal, either.
 
@@ -210,7 +241,7 @@ def _start_phone_server(args: argparse.Namespace, web: Callable[[str], object] |
 
     print("Loading phone server...", flush=True)
     phone_memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
-    phone_brain = Brain(model=args.model, host=args.host, lookup=web, memory=phone_memory)
+    phone_brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=phone_memory)
     transcriber = Transcriber(args.whisper)
     synthesizer = None if args.quiet else Synthesizer(args.voice)
 

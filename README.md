@@ -96,6 +96,7 @@ uv run legion --gui               # a HUD window; greet it or type, and reconnec
 uv run legion --gui --mic XM4     # same, but pointed at a mic by name, so a reconnect survives
 uv run legion --gui --text        # the HUD window, no microphone loaded at all
 uv run legion --gui --phone       # the HUD window, plus a tap-to-talk page for a phone on the same WiFi
+uv run legion --no-calendar       # ignore calendar_credentials.json even if it's there
 uv run legion --ask question.wav --save reply.wav   # answer a recording, write the spoken reply to a file
 ```
 
@@ -120,6 +121,18 @@ uv run legion --host http://192.168.1.50:11434 --model llama3.1:8b
 
 Speech recognition and synthesis stay local, so only text crosses the network. Only expose Ollama like this on a network you trust — it has no authentication.
 
+### Google Calendar (read-only)
+
+Legion can answer "what's on my calendar" questions, but only ever *reads* — the Google permission it asks for (`calendar.readonly`) doesn't let it create, edit, or delete anything, and this is enforced by Google, not just by Legion's own code. One-time setup, all free:
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a project (any name).
+2. In that project, go to **APIs & Services → Library**, search for **Google Calendar API**, and enable it.
+3. Go to **APIs & Services → OAuth consent screen**. Choose **External**, fill in the required fields, and add your own Google account under **Test users** (this keeps it free and skips Google's app-review process, which personal use doesn't need).
+4. Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**. Application type: **Desktop app**. Download the resulting JSON.
+5. Save that file as `~/.legion/calendar_credentials.json` (or point `--calendar-credentials` at wherever you put it).
+
+Calendar access turns on automatically once that file exists — no flag needed. The first calendar question opens a browser to sign in and grant read access; after that, a token cached at `~/.legion/calendar_token.json` means it won't ask again.
+
 ### Configuration
 
 Every option can also be set with an environment variable.
@@ -141,6 +154,9 @@ Every option can also be set with an environment variable.
 | `--phone` | `LEGION_PHONE=1` | off |
 | `--phone-port` | `LEGION_PHONE_PORT` | `8420` (plain HTTP; certificate setup page) |
 | `--phone-https-port` | `LEGION_PHONE_HTTPS_PORT` | `8443` (HTTPS; where the microphone works) |
+| `--calendar-credentials` | `LEGION_CALENDAR_CREDENTIALS` | `~/.legion/calendar_credentials.json` |
+| `--calendar-token` | `LEGION_CALENDAR_TOKEN` | `~/.legion/calendar_token.json` |
+| `--no-calendar` | `LEGION_CALENDAR=0` | calendar enabled once credentials exist |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
@@ -169,6 +185,7 @@ legion/
 ├── phone.py     A small bottle server so a phone on the same WiFi can talk to Legion
 ├── phone/       The tap-to-talk page phone.py serves
 ├── search.py    Decides when to check the web, and formats what comes back
+├── gcal.py      Read-only Google Calendar access, decided and formatted the same way as search.py
 ├── memory.py    Notes about the user that last between sessions
 ├── keys.py      Non-blocking Enter detection, for cutting in mid-reply
 ├── text.py      Sentence buffering and cleanup for speech
