@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from legion.brain import Brain
 from legion.gcal import CalendarClient
 from legion.memory import DEFAULT_FILE, Memory
+from legion.research import Library
 from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
 
@@ -40,17 +41,20 @@ def main(argv: list[str] | None = None) -> int:
     calendar = None
     if not args.no_calendar and args.calendar_credentials.exists():
         calendar = CalendarClient(args.calendar_credentials, args.calendar_token).lookup
+    # Loaded once and shared with the phone's own Brain too: read-only notes, safe from any of
+    # the thread-safety concerns that keep the phone from sharing a Brain or Memory instance.
+    research = Library().lookup
 
     if args.gui:
         # Checking Ollama and loading the model can take a good while right after a reboot, and
         # this is launched with no console to show it in -- so the window opens first and reports
         # its own progress, instead of all of that happening silently before anyone can see it.
-        _gui_loop(args, web, calendar)
+        _gui_loop(args, web, calendar, research)
         return 0
 
     try:
         memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
-        brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
+        brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, research_lookup=research, memory=memory)
         brain.check()
         print("Loading model...", flush=True)
         brain.load()
@@ -59,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         if calendar:
             print(f"Calendar: enabled, using {args.calendar_credentials}")
         if args.phone and not args.ask:
-            _start_phone_server(args, web, calendar)
+            _start_phone_server(args, web, calendar, research=research)
         if args.ask:
             return _answer_recording(args, brain)
         elif args.text:
@@ -92,7 +96,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="legion", description="A local, offline voice assistant.")
     parser.add_argument(
         "--model",
-        default=os.environ.get("LEGION_MODEL", "llama3.2:3b"),
+        default=os.environ.get("LEGION_MODEL", "llama3.1:8b"),
         help="Ollama model to talk to (default: %(default)s)",
     )
     parser.add_argument(
@@ -230,6 +234,7 @@ def _start_phone_server(
     calendar: Callable[[str], object] | None,
     transcriber: Transcriber | None = None,
     synthesizer: Synthesizer | None = None,
+    research: Callable[[str], object] | None = None,
 ) -> None:
     """Starts legion.phone's servers on background threads, so they run alongside whatever else
     --phone was combined with -- the GUI, the terminal, either.
@@ -258,7 +263,9 @@ def _start_phone_server(
 
     print("Loading phone server...", flush=True)
     phone_memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
-    phone_brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=phone_memory)
+    phone_brain = Brain(
+        model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, research_lookup=research, memory=phone_memory
+    )
     if transcriber is None:
         transcriber = Transcriber(args.whisper)
     if synthesizer is None and not args.quiet:
@@ -351,6 +358,7 @@ def _start_up(
     args: argparse.Namespace,
     web: Callable[[str], object] | None,
     calendar: Callable[[str], object] | None,
+    research: Callable[[str], object] | None,
     hud: Hud,
 ) -> _StartUp:
     """Everything that has to happen before the GUI can answer its first question, reported to
@@ -367,7 +375,7 @@ def _start_up(
     from legion.wake import WakeWord
 
     memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
-    brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
+    brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, research_lookup=research, memory=memory)
     hud.set_readout("STARTING", "checking Ollama...")
     brain.check()  # fails fast, before spinning up threads that would all need this to work
 
@@ -415,11 +423,16 @@ def _start_up(
     wake = built.get("wake")
     if args.phone:
         hud.set_readout("STARTING", "starting the phone server...")
-        _start_phone_server(args, web, calendar, transcriber=transcriber, synthesizer=synthesizer)
+        _start_phone_server(args, web, calendar, transcriber=transcriber, synthesizer=synthesizer, research=research)
     return _StartUp(brain, transcriber, synthesizer, wake)
 
 
-def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, calendar: Callable[[str], object] | None) -> None:
+def _gui_loop(
+    args: argparse.Namespace,
+    web: Callable[[str], object] | None,
+    calendar: Callable[[str], object] | None,
+    research: Callable[[str], object] | None,
+) -> None:
     """The conversation shown in a HUD window instead of the terminal.
 
     Everything slow -- checking Ollama, loading the model, loading speech recognition -- happens
@@ -449,7 +462,7 @@ def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, cal
         _active_hud = hud
         hud.set_state("thinking")
         try:
-            brain, transcriber, synthesizer, wake = _start_up(args, web, calendar, hud)
+            brain, transcriber, synthesizer, wake = _start_up(args, web, calendar, research, hud)
         except RuntimeError as exc:
             # Nothing else can show this: there's no console, and the window would otherwise just
             # vanish the instant this function returns, before anyone could read why.

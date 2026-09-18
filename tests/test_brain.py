@@ -159,6 +159,54 @@ def test_without_a_calendar_lookup_the_model_is_not_told_it_has_one(sent):
     assert "calendar" not in sent[0][0]["content"].lower()
 
 
+def test_research_results_are_handed_to_the_model_with_the_question(sent):
+    from legion.research import ResearchCheck
+
+    brain = Brain(
+        model="m", host="h",
+        research_lookup=lambda text: ResearchCheck(
+            "Base editing avoids double-strand breaks (PMID:1234567).",
+            "You answered that using research notes on PMID:1234567.",
+        ),
+    )
+
+    drain(brain, "How does CRISPR base editing work?")
+
+    assert "double-strand breaks" in sent[0][1]["content"]
+    assert "research" in sent[0][0]["content"].lower()
+
+
+def test_the_research_source_record_does_not_outlive_the_one_follow_up_it_is_for(sent):
+    from legion.research import NOT_CHECKED as RESEARCH_NOT_CHECKED
+    from legion.research import ResearchCheck
+
+    checks = iter(
+        [
+            ResearchCheck("Base editing avoids double-strand breaks.", "You answered that using research notes on PMID:1234567."),
+            RESEARCH_NOT_CHECKED,
+            RESEARCH_NOT_CHECKED,
+        ]
+    )
+    brain = Brain(model="m", host="h", research_lookup=lambda text: next(checks))
+
+    drain(brain, "How does CRISPR base editing work?")
+    drain(brain, "Where did you get that from?")
+    drain(brain, "What is the capital of Australia?")
+
+    third_turn = sent[2]
+    assert not any("PMID:1234567" in message["content"] for message in third_turn), (
+        "an unrelated later question should not be told that earlier answers came from the research notes"
+    )
+
+
+def test_exact_calculations_are_handed_to_the_model_with_the_question(sent):
+    brain = Brain(model="m", host="h")
+
+    drain(brain, "What is 47 times 89?")
+
+    assert "4183" in sent[0][1]["content"]
+
+
 def test_a_fact_told_just_now_is_in_the_prompt_for_this_very_reply(sent, tmp_path, monkeypatch):
     from legion import memory as memory_module
 

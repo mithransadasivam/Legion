@@ -29,7 +29,7 @@ flowchart LR
 | Stage | Library | Runs on |
 |---|---|---|
 | Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`base.en`, int8) | CPU |
-| Language model | [Ollama](https://ollama.com) (`llama3.2:3b` by default) | Local, or another machine on your network |
+| Language model | [Ollama](https://ollama.com) (`llama3.1:8b` by default) | Local, or another machine on your network |
 | Speech synthesis | [Piper](https://github.com/OHF-Voice/piper1-gpl) (`en_GB-alan-medium`) | CPU |
 
 On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answer in about **6 seconds from a cold start**, including loading all three models.
@@ -45,6 +45,10 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 **It looks things up, but only when it has to.** Questions about live information — today's weather, the latest news, current prices, who won last night — are answered from a [DuckDuckGo](https://pypi.org/project/ddgs/) search, free and keyless. So are technical questions the model tends to answer vaguely or with an invented detail among the true ones: asked why a Wheatstone bridge balances, it never named the actual mechanism; asked about welding a drained fuel tank, it warned about "toxic fumes like methanol", which isn't the real hazard. Searching fixed both. Deciding *when* to search is deliberately not the model's job: offered a search tool, llama3.2:3b reached for it even for "the capital of Australia", which would put a network round trip in front of every reply. A [plain text gate](legion/search.py) decides instead, so ordinary questions cost 0.00 s and never touch the network, while a search adds about 3 s. The terminal shows `(checking the web)` whenever it searches, so you can always tell which answers came from the web, and Legion remembers which sites it used for exactly one follow-up, so asking "where did you get that?" gets a true answer instead of a plausible invented source — kept any longer, it started claiming a source for later questions it never actually searched, having seen the pattern established earlier in the conversation. Run with `--no-search` to stay strictly offline.
 
 **It remembers you between sessions.** Tell Legion something lasting, such as your name, where you live, or a birthday to remember, and it writes a one-line note to `~/.legion/memory.txt` and prints `(noted: ...)`. Every session starts with those notes in its prompt. The file is plain text, so you can read it, fix it, or delete a line, and it lives outside the repository, so it's never committed. Small models make this harder than it sounds, and each rule here came from watching llama3.2:3b get it wrong. The note-taker is never shown questions, because asked "Where do I live?" it noted that the user lives in New York City. Notes reach the model newest first, because listed oldest first it kept answering "Las Vegas" after the user said they'd moved to Chennai. And the note-taking prompt carries worked examples, because without them "remember my sister's birthday is on March 3rd" became "the user has a sister". One weakness remains: asked "What's my name?" point blank, it sometimes falls back on its trained answer that it doesn't know. Run with `--no-memory` to turn memory off.
+
+**It never guesses at arithmetic.** Small models are unreliable at exact maths — asked "what's 847 times 39", they'll often just confidently invent a wrong number. [`legion/calc.py`](legion/calc.py) recognizes a purely arithmetic question the same way [`legion/search.py`](legion/search.py) recognizes a search-worthy one — a plain text gate, no model involved in the decision — and computes the real answer with Python's own numbers. The expression is evaluated by walking its parsed syntax tree by hand rather than `eval()`, so only numeric literals and a fixed set of arithmetic operators can ever run; there's no path to executing arbitrary code.
+
+**It can answer from real research, not just what it half-remembers.** For robotics, medicine, and CRISPR/gene-editing questions, [`legion/research.py`](legion/research.py) searches a small local library of research summaries — [`legion/knowledge/*.md`](legion/knowledge/) — by plain keyword overlap (no embeddings, no vector database, nothing multi-gigabyte to install) and hands the best-matching notes to the model as context, the same one-turn-honesty pattern web search and calendar results use. Each entry is a short, Legion-authored summary of one real paper's finding, with a citation for provenance — never a verbatim excerpt, both for copyright and because a dense paper excerpt is unpleasant to have read aloud. The persona also leans into ambitious or contested ideas here rather than hedging everything into vagueness: it'll say plainly when something is solid versus still genuinely uncertain or debated, without refusing to engage with the interesting, unproven version of an idea.
 
 **Replies are cleaned before they're spoken.** Language models love markdown. [`clean_for_speech`](legion/text.py) strips emphasis, headings, list markers, links, and emoji, so the voice never reads out "asterisk asterisk".
 
@@ -73,7 +77,7 @@ Requires macOS, Linux, or Windows with Python 3.11+. The commands below are for 
 ```bash
 brew install ollama uv
 brew services start ollama
-ollama pull llama3.2:3b
+ollama pull llama3.1:8b
 
 git clone https://github.com/mithransadasivam/legion.git
 cd legion
@@ -139,7 +143,7 @@ Every option can also be set with an environment variable.
 
 | Flag | Environment variable | Default |
 |---|---|---|
-| `--model` | `LEGION_MODEL` | `llama3.2:3b` |
+| `--model` | `LEGION_MODEL` | `llama3.1:8b` |
 | `--host` | `LEGION_OLLAMA_HOST` | `http://127.0.0.1:11434` |
 | `--whisper` | `LEGION_WHISPER_MODEL` | `base.en` |
 | `--voice` | `LEGION_VOICE` | `en_GB-alan-medium` |
@@ -186,6 +190,9 @@ legion/
 ├── phone/       The tap-to-talk page phone.py serves
 ├── search.py    Decides when to check the web, and formats what comes back
 ├── gcal.py      Read-only Google Calendar access, decided and formatted the same way as search.py
+├── calc.py      Exact arithmetic via a hand-rolled safe expression evaluator, never eval()
+├── research.py  Keyword retrieval over legion/knowledge/*.md, for robotics/medicine/CRISPR questions
+├── knowledge/   Legion-authored research summaries research.py searches, one topic per .md file
 ├── memory.py    Notes about the user that last between sessions
 ├── keys.py      Non-blocking Enter detection, for cutting in mid-reply
 ├── text.py      Sentence buffering and cleanup for speech
@@ -196,7 +203,7 @@ claude-project/  An earlier, no-code version of Legion (see below)
 
 ## Limitations
 
-- **A 3B model is not Claude or GPT.** It's good at conversation and general knowledge and noticeably weaker at nuanced reasoning. Pointing `--host` at a bigger model on a GPU machine helps a lot.
+- **An 8B local model is not Claude or GPT.** It's good at conversation, general knowledge, and technical reasoning, and noticeably weaker at anything genuinely subtle. `--model llama3.2:3b` trades some of that for faster replies; pointing `--host` at a bigger model on a GPU machine helps more than either.
 - **No cut-in in `--wake` or `--gui` mode.** Saying the wake word, or typing, while Legion is still replying just queues up for afterwards rather than interrupting it — a real interrupt would need a second mic stream open during playback, and isn't built yet.
 - Conversation history lasts for the session only, though [memory](legion/memory.py) carries the lasting facts forward.
 
