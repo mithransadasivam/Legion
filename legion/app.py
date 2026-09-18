@@ -9,7 +9,7 @@ import threading
 import time
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from legion.brain import Brain
 from legion.gcal import CalendarClient
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from legion.audio import SpeechQueue
     from legion.gui import Hud
     from legion.stt import Transcriber
+    from legion.tts import Synthesizer
     from legion.wake import WakeWord
 
 # Set only while the GUI window is running, so the search/memory announce hooks below -- shared
@@ -224,7 +225,11 @@ def _start_speech(voice: str) -> SpeechQueue:
 
 
 def _start_phone_server(
-    args: argparse.Namespace, web: Callable[[str], object] | None, calendar: Callable[[str], object] | None
+    args: argparse.Namespace,
+    web: Callable[[str], object] | None,
+    calendar: Callable[[str], object] | None,
+    transcriber: Transcriber | None = None,
+    synthesizer: Synthesizer | None = None,
 ) -> None:
     """Starts legion.phone's servers on background threads, so they run alongside whatever else
     --phone was combined with -- the GUI, the terminal, either.
@@ -234,6 +239,12 @@ def _start_phone_server(
     once. The trade-off is real but small -- the phone and, say, the desktop HUD keep separate
     conversations, and a fact learned on one isn't visible to the other's in-memory notes until
     restarted, though both still write to the same memory file.
+
+    Transcriber and Synthesizer are different: they hold no conversation state, just a loaded
+    model each, so there's no such hazard in sharing them -- pass in the ones --gui already built
+    (when combined with --phone) rather than loading Whisper and Piper into memory a second time.
+    Building its own here, when none are passed in, keeps plain ``--phone`` (without --gui)
+    working exactly as before.
 
     Two servers sharing one app: plain HTTP for the page that explains why the microphone won't
     work yet and hands over a certificate, HTTPS -- the only way a browser exposes the
@@ -248,8 +259,10 @@ def _start_phone_server(
     print("Loading phone server...", flush=True)
     phone_memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
     phone_brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=phone_memory)
-    transcriber = Transcriber(args.whisper)
-    synthesizer = None if args.quiet else Synthesizer(args.voice)
+    if transcriber is None:
+        transcriber = Transcriber(args.whisper)
+    if synthesizer is None and not args.quiet:
+        synthesizer = Synthesizer(args.voice)
 
     address = lan_address()
     cert_path, key_path = ensure_certificate(DEFAULT_FILE.parent, address)
@@ -327,29 +340,83 @@ def _hear_after_wake_word(wake: WakeWord, mic: int | str | None, cut_in: bool) -
     return wake.listen(mic, on_wake=lambda: print("● Listening...", flush=True), wake_first=not cut_in)
 
 
+class _StartUp(NamedTuple):
+    brain: Brain
+    transcriber: Transcriber | None
+    synthesizer: Synthesizer | None
+    wake: WakeWord | None
+
+
 def _start_up(
     args: argparse.Namespace,
     web: Callable[[str], object] | None,
     calendar: Callable[[str], object] | None,
     hud: Hud,
-) -> Brain:
+) -> _StartUp:
     """Everything that has to happen before the GUI can answer its first question, reported to
-    the HUD as it goes rather than left to print() -- see _gui_loop for why."""
+    the HUD as it goes rather than left to print() -- see _gui_loop for why.
+
+    The model, speech recognition, and the voice don't depend on each other, so they load on
+    parallel threads instead of one after another: on a cold start right after a reboot, that's
+    the difference between waiting for the sum of every load and waiting for just the slowest
+    one. Transcriber and Synthesizer are also built once here and handed to the phone server when
+    --phone is combined with --gui, instead of it loading its own separate copy of each.
+    """
+    from legion.stt import Transcriber
+    from legion.tts import Synthesizer
+    from legion.wake import WakeWord
+
     memory = None if args.no_memory else Memory(args.memory, args.host, args.model, on_noted=_announce_notes)
     brain = Brain(model=args.model, host=args.host, lookup=web, calendar_lookup=calendar, memory=memory)
     hud.set_readout("STARTING", "checking Ollama...")
-    brain.check()
-    hud.set_readout("STARTING", "loading the model...")
-    print("Loading model...", flush=True)
-    brain.load()
+    brain.check()  # fails fast, before spinning up threads that would all need this to work
+
+    # The phone always needs a microphone path even under --text (which only turns off the GUI's
+    # own mic), so a transcriber is loaded whenever either side of the app will use one.
+    need_input = args.phone or not args.text
+    need_output = not args.quiet
+    built: dict[str, object] = {}
+
+    def _load_model() -> None:
+        hud.set_readout("STARTING", "loading the model...")
+        print("Loading model...", flush=True)
+        brain.load()
+
+    def _load_input() -> None:
+        if not need_input:
+            return
+        hud.set_readout("STARTING", "loading speech recognition...")
+        print("Loading speech recognition...", flush=True)
+        built["transcriber"] = Transcriber(args.whisper)
+        # model=None: no trained wake word, just the voice activity detector openWakeWord ships
+        # alongside one -- and not needed at all when the GUI itself is never going to listen.
+        built["wake"] = None if args.text else WakeWord(model=None)
+
+    def _load_output() -> None:
+        if not need_output:
+            return
+        hud.set_readout("STARTING", "loading the voice...")
+        print("Loading voice...", flush=True)
+        built["synthesizer"] = Synthesizer(args.voice)
+
+    jobs = [threading.Thread(target=job) for job in (_load_model, _load_input, _load_output)]
+    for job in jobs:
+        job.start()
+    for job in jobs:
+        job.join()
+
     if memory:
         print(f"Memory: {len(memory.notes)} notes in {args.memory}")
     if calendar:
         print(f"Calendar: enabled, using {args.calendar_credentials}")
+
+    transcriber = built.get("transcriber")
+    synthesizer = built.get("synthesizer")
+    wake = built.get("wake")
     if args.phone:
         hud.set_readout("STARTING", "starting the phone server...")
-        _start_phone_server(args, web, calendar)
-    return brain
+        _start_phone_server(args, web, calendar, transcriber=transcriber, synthesizer=synthesizer)
+    return _StartUp(brain, transcriber, synthesizer, wake)
 
 
 def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, calendar: Callable[[str], object] | None) -> None:
@@ -374,7 +441,6 @@ def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, cal
     """
     from legion.audio import SpeechQueue
     from legion.gui import run
-    from legion.tts import Synthesizer
 
     global _active_hud
 
@@ -383,7 +449,7 @@ def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, cal
         _active_hud = hud
         hud.set_state("thinking")
         try:
-            brain = _start_up(args, web, calendar, hud)
+            brain, transcriber, synthesizer, wake = _start_up(args, web, calendar, hud)
         except RuntimeError as exc:
             # Nothing else can show this: there's no console, and the window would otherwise just
             # vanish the instant this function returns, before anyone could read why.
@@ -391,32 +457,19 @@ def _gui_loop(args: argparse.Namespace, web: Callable[[str], object] | None, cal
             threading.Event().wait()
             return
 
-        synthesizer = None
-        if not args.quiet:
-            print("Loading voice...", flush=True)
-            hud.set_readout("STARTING", "loading the voice...")
-            synthesizer = Synthesizer(args.voice)
-
-        wake = None
-        transcriber = None
         if args.text:
             print("Opening the Legion window. Type into it; close the window to quit.")
         else:
-            from legion.stt import Transcriber
-            from legion.wake import WakeWord
-
-            # These don't need a microphone to exist yet -- only actually listening does, and
-            # that's handled by _voice_watcher, which tolerates one not being connected at all.
-            # model=None: no trained wake word, just the voice activity detector openWakeWord
-            # ships alongside one.
-            print("Loading speech recognition...", flush=True)
-            hud.set_readout("STARTING", "loading speech recognition...")
-            transcriber = Transcriber(args.whisper)
-            wake = WakeWord(model=None)
+            # Not needing a microphone to exist yet -- only actually listening does, and that's
+            # handled by _voice_watcher, which tolerates one not being connected at all.
             print('Opening the Legion window. Greet it ("hey", "hi", "legion", ...) or type; close the window to quit.')
 
         speech = SpeechQueue(synthesizer, on_level=hud.set_level) if synthesizer else None
         hud.set_config(model=args.model, host=args.host, voice=args.voice, wake_phrase="a greeting" if wake else "(typing only)")
+        # One-time, not inside the loop below: without this, whatever the last "loading..." line
+        # happened to be stays on screen forever, since the loop itself no longer resets it after
+        # each reply.
+        hud.set_readout("STANDBY", "Ready.")
 
         busy = threading.Event()
         # Set right after a voice-originated reply finishes, so the watcher's next listen skips
