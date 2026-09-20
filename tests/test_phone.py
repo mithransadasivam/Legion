@@ -164,6 +164,42 @@ class TestRoutes:
         assert result["reply"] == "The capital of France is Paris, sir."
         assert result["audio"] is None
 
+    def test_say_answers_typed_text_with_plain_text_and_no_audio(self, server):
+        import urllib.parse
+
+        base_url, brain, transcriber, synthesizer = server()
+        request = urllib.request.Request(
+            f"{base_url}/say", data=urllib.parse.urlencode({"text": "What is the capital of France?"}).encode(),
+            method="POST",
+        )
+
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.headers["Content-Type"].startswith("text/plain")
+            assert response.read().decode() == "The capital of France is Paris, sir."
+        assert brain.asked == ["What is the capital of France?"]
+        assert transcriber.paths == [], "text needs no transcription"
+        assert synthesizer.synthesized == [], "the watch speaks the reply itself"
+
+    def test_say_also_accepts_a_json_body(self, server):
+        base_url, brain, *_ = server()
+        request = urllib.request.Request(
+            f"{base_url}/say", data=json.dumps({"text": "Hello there"}).encode(), method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.status == 200
+        assert brain.asked == ["Hello there"]
+
+    def test_say_with_no_text_is_a_client_error_and_never_reaches_the_model(self, server):
+        base_url, brain, *_ = server()
+        request = urllib.request.Request(f"{base_url}/say", data=b"text=+", method="POST")
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request)
+        assert exc_info.value.code == 400
+        assert brain.asked == []
+
     def test_the_certificate_download_is_a_real_x509_certificate(self, server):
         from cryptography import x509
 

@@ -180,6 +180,25 @@ def build_app(
         audio_base64 = _synthesize_to_base64(synthesizer, spoken) if synthesizer and spoken else None
         return {"heard": heard, "reply": reply, "audio": audio_base64}
 
+    @app.post("/say")
+    def say():
+        # For clients that already have text and can only speak it themselves -- an Apple Watch
+        # Shortcut dictates on the watch, posts the words here, and reads the reply aloud with the
+        # watch's own voice. Plain text back, not JSON, so the Shortcut needs no parsing step.
+        text = bottle.request.forms.getunicode("text")
+        if text is None and (bottle.request.content_type or "").startswith("application/json"):
+            text = (bottle.request.json or {}).get("text")
+        text = (text or "").strip()
+        if not text:
+            bottle.response.status = 400
+            bottle.response.content_type = "text/plain; charset=utf-8"
+            return "no text sent"
+        print(f"Watch: {text}", flush=True)
+        reply = "".join(brain.reply(text))
+        print(f"Legion: {reply}", flush=True)
+        bottle.response.content_type = "text/plain; charset=utf-8"
+        return clean_for_speech(reply)
+
     return app
 
 
