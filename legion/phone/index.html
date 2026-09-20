@@ -345,7 +345,9 @@
     try {
       const form = new FormData();
       form.append('audio', blob, 'question.webm');
-      const res = await fetch('/ask', { method: 'POST', body: form });
+      // Without a limit, a server that's slow or stuck leaves this on "thinking" indefinitely with
+      // nothing to say why -- the only way out being to refresh the page.
+      const res = await fetch('/ask', { method: 'POST', body: form, signal: AbortSignal.timeout(120000) });
       const data = await res.json();
       if (!data.heard) {
         setReadout('<span class="hint">(Didn\'t catch that.)</span>');
@@ -365,7 +367,9 @@
         setState('idle', 'TAP TO TALK');
       }
     } catch (err) {
-      setReadout('<span class="hint">Couldn\'t reach Legion: ' + err.message + '</span>');
+      setReadout('<span class="hint">' + (err.name === 'TimeoutError'
+        ? 'Legion took too long to answer. Check that it is running and try again.'
+        : 'Couldn\'t reach Legion: ' + err.message) + '</span>');
       setState('idle', 'TAP TO TALK');
     }
   }
