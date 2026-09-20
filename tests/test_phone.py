@@ -164,6 +164,13 @@ class TestRoutes:
         assert result["reply"] == "The capital of France is Paris, sir."
         assert result["audio"] is None
 
+    def test_the_watch_face_image_is_served_as_a_real_png(self, server):
+        base_url, *_ = server()
+
+        with urllib.request.urlopen(f"{base_url}/watchface.png") as response:
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read(8) == b"\x89PNG\r\n\x1a\n"
+
     def test_say_answers_typed_text_with_plain_text_and_no_audio(self, server):
         import urllib.parse
 

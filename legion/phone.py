@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from legion.tts import Synthesizer
 
 _PAGE = Path(__file__).parent / "phone" / "index.html"
+_WATCH_FACE = Path(__file__).parent / "assets" / "watchface.png"
 _CERT_VALID_DAYS = 3650
 
 
@@ -149,6 +150,10 @@ def build_app(
     @app.get("/config")
     def config():
         return {"model": model, "host": host, "httpsUrl": https_url}
+
+    @app.get("/watchface.png")
+    def watch_face():
+        return bottle.static_file(_WATCH_FACE.name, root=str(_WATCH_FACE.parent), mimetype="image/png")
 
     @app.get("/legion-cert.cer")
     def download_cert():
