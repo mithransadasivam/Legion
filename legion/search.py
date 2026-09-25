@@ -138,7 +138,10 @@ def _fetch(query: str, max_results: int = MAX_RESULTS) -> list[dict]:
     from ddgs import DDGS
 
     try:
-        found = DDGS(timeout=TIMEOUT_SECONDS).text(query, max_results=max_results)
+        # Pinned: left on its default ("auto"), ddgs shuffles through every engine it knows --
+        # Google included -- and scrapes each from this machine's IP. Google answers automated
+        # queries like that with a captcha for anyone on the same connection, browsing included.
+        found = DDGS(timeout=TIMEOUT_SECONDS).text(query, max_results=max_results, backend="duckduckgo")
     except Exception:
         # Offline first: a failed search should cost one answer, not the conversation.
         return []

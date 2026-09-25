@@ -6,7 +6,7 @@ from legion.search import NOT_CHECKED, lookup, search, search_query
 @pytest.fixture
 def fake_ddgs(monkeypatch):
     """Replaces DuckDuckGo with a stub, so the tests never touch the network."""
-    state = {"results": [], "error": None, "calls": []}
+    state = {"results": [], "error": None, "calls": [], "backends": []}
 
     class FakeDDGS:
         def __init__(self, **kwargs) -> None:
@@ -14,6 +14,7 @@ def fake_ddgs(monkeypatch):
 
         def text(self, query, max_results=None, **kwargs):
             state["calls"].append((query, max_results))
+            state["backends"].append(kwargs.get("backend"))
             if state["error"]:
                 raise state["error"]
             return state["results"]
@@ -91,6 +92,15 @@ class TestSearchQuery:
 
 
 class TestSearch:
+    def test_only_duckduckgo_is_ever_queried(self, fake_ddgs):
+        # ddgs's default backend scrapes Google among others from this machine's IP, which got the
+        # whole home connection captcha'd by Google. A single pinned engine is the whole fix.
+        fake_ddgs["results"] = [{"title": "A site", "body": "text", "href": "https://a.site"}]
+
+        search("anything")
+
+        assert fake_ddgs["backends"] == ["duckduckgo"]
+
     def test_each_result_becomes_one_line_naming_its_site(self, fake_ddgs):
         fake_ddgs["results"] = [
             {"title": "BBC News", "body": "Something happened today.", "href": "https://www.bbc.co.uk/news"},
