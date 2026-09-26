@@ -72,6 +72,8 @@ Two manual steps, both discovered the hard way rather than anticipated. First, W
 
 The watch can't show the animated HUD — that would need a native app — but it can wear the orb: `http://<your PC's address>:8420/watchface.png` serves it as a watch-face image on pure black. Open that on the iPhone, save it to Photos, then Share → *Create Watch Face*, and add the Legion shortcut as the face's complication so a tap starts a conversation. It's a still picture and doesn't react to what Legion is doing.
 
+**It can be reached from outside the house, through Tailscale.** Install [Tailscale](https://tailscale.com) (free for personal use) on the PC and the phone, sign both into the same account, and in its admin console turn on **MagicDNS** and **HTTPS Certificates**. Legion then notices on its own: [`legion/tailscale.py`](legion/tailscale.py) asks Tailscale for a genuine, publicly trusted certificate for the machine's tailnet name and serves the same phone page on a third port (`--phone-tailscale-port`, default `8444`) at `https://<machine>.<tailnet>.ts.net:8444`. A real certificate is the point — the self-signed one is for a name it can't know in advance, and a phone away from home can't be walked through trusting it — so there's no profile to install and the microphone works from anywhere. Nothing is opened on the router: traffic only ever travels inside the encrypted tailnet, so only your own signed-in devices can reach it. It needs the PC on and awake, and Windows Firewall needs an inbound rule for that port, ideally limited to Tailscale's own address range (`100.64.0.0/10`). If Tailscale isn't installed, isn't signed in, or hasn't had HTTPS certificates enabled, Legion simply starts without this third server.
+
 Verified in full: a real recording of "what is the capital of France?" — real Whisper transcription, a real Ollama reply, a real Piper WAV — uploaded and answered correctly over an actual TLS connection using the generated certificate, not just plain HTTP; the certificate downloaded over the network is a genuine, parseable X.509 file with the right `SubjectAlternativeName`; and reusing it across a second run, versus generating a fresh one when the LAN IP changes, both checked directly rather than assumed.
 
 ## Setup
@@ -162,6 +164,7 @@ Every option can also be set with an environment variable.
 | `--phone` | `LEGION_PHONE=1` | off |
 | `--phone-port` | `LEGION_PHONE_PORT` | `8420` (plain HTTP; certificate setup page) |
 | `--phone-https-port` | `LEGION_PHONE_HTTPS_PORT` | `8443` (HTTPS; where the microphone works) |
+| `--phone-tailscale-port` | `LEGION_PHONE_TAILSCALE_PORT` | `8444` (HTTPS over Tailscale; used automatically when it's set up) |
 | `--calendar-credentials` | `LEGION_CALENDAR_CREDENTIALS` | `~/.legion/calendar_credentials.json` |
 | `--calendar-token` | `LEGION_CALENDAR_TOKEN` | `~/.legion/calendar_token.json` |
 | `--no-calendar` | `LEGION_CALENDAR=0` | calendar enabled once credentials exist |
@@ -192,6 +195,7 @@ legion/
 ├── hud/         The HUD itself: one static HTML/CSS/JS file, shown by pywebview
 ├── phone.py     A small bottle server so a phone on the same WiFi can talk to Legion
 ├── phone/       The tap-to-talk page phone.py serves
+├── tailscale.py A trusted HTTPS certificate for reaching the phone page from outside the house
 ├── search.py    Decides when to check the web, and formats what comes back
 ├── gcal.py      Read-only Google Calendar access, decided and formatted the same way as search.py
 ├── calc.py      Exact arithmetic via a hand-rolled safe expression evaluator, never eval()

@@ -160,6 +160,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="port for --phone's HTTPS page, where the microphone actually works (default: %(default)s)",
     )
     parser.add_argument(
+        "--phone-tailscale-port",
+        type=int,
+        default=int(os.environ.get("LEGION_PHONE_TAILSCALE_PORT", "8444")),
+        help="port for --phone's page over Tailscale, used automatically when Tailscale is set up (default: %(default)s)",
+    )
+    parser.add_argument(
         "--wake-threshold",
         type=float,
         default=float(os.environ.get("LEGION_WAKE_THRESHOLD", "0.5")),
@@ -259,6 +265,7 @@ def _start_phone_server(
     from legion.memory import DEFAULT_FILE
     from legion.phone import build_app, ensure_certificate, lan_address, run_http, run_https
     from legion.stt import Transcriber
+    from legion.tailscale import certificate as tailnet_certificate
     from legion.tts import Synthesizer
 
     print("Loading phone server...", flush=True)
@@ -285,6 +292,18 @@ def _start_phone_server(
     threading.Thread(
         target=run_https, args=(phone_app, cert_path, key_path), kwargs={"port": args.phone_https_port}, daemon=True
     ).start()
+
+    # Automatic when Tailscale is installed, signed in, and has HTTPS certificates enabled: a
+    # third server, on its own port, with a real certificate for this machine's tailnet name --
+    # the self-signed one above can't cover a name it doesn't know about, and a phone away from
+    # home has no way to be walked through trusting it anyway.
+    tailnet = tailnet_certificate(DEFAULT_FILE.parent)
+    if tailnet:
+        print(f'Tailscale: open "https://{tailnet.name}:{args.phone_tailscale_port}" from anywhere.', flush=True)
+        threading.Thread(
+            target=run_https, args=(phone_app, tailnet.cert, tailnet.key),
+            kwargs={"port": args.phone_tailscale_port}, daemon=True,
+        ).start()
 
 
 def _text_loop(brain: Brain, speech: SpeechQueue | None) -> None:
