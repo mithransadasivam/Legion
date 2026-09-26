@@ -6,3 +6,15 @@ __pycache__/
 *.wav
 *.log
 research-assistant.zip
+
+# Machine-specific launchers (hardcoded local paths) and anything that could hold a credential.
+# None of these are tracked today -- this only stops a careless `git add .` from changing that.
+legion.vbs
+start-legion.ps1
+warm-ollama.ps1
+*.pem
+*.key
+.env
+client_secret*.json
+calendar_credentials.json
+calendar_token.json
