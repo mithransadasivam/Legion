@@ -18,9 +18,13 @@ import base64
 import datetime
 import ipaddress
 import ssl
+import sys
 import tempfile
+import threading
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import TYPE_CHECKING
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 import bottle
 
@@ -142,6 +146,10 @@ def build_app(
     cert_der = x509.load_pem_x509_certificate(cert_path.read_bytes()).public_bytes(serialization.Encoding.DER)
 
     app = bottle.Bottle()
+    # Requests now run concurrently, but a Brain's conversation history isn't safe to mutate from
+    # two threads at once -- so replies take turns, while everything else (uploads, transcription,
+    # serving the page) no longer waits on them.
+    brain_lock = threading.Lock()
 
     @app.get("/")
     def page():
@@ -179,7 +187,8 @@ def build_app(
             return {"heard": "", "reply": "", "audio": None}
 
         print(f"Phone: {heard}", flush=True)
-        reply = "".join(brain.reply(heard))
+        with brain_lock:
+            reply = "".join(brain.reply(heard))
         print(f"Legion: {reply}", flush=True)
         spoken = clean_for_speech(reply)
         audio_base64 = _synthesize_to_base64(synthesizer, spoken) if synthesizer and spoken else None
@@ -199,7 +208,8 @@ def build_app(
             bottle.response.content_type = "text/plain; charset=utf-8"
             return "no text sent"
         print(f"Watch: {text}", flush=True)
-        reply = "".join(brain.reply(text))
+        with brain_lock:
+            reply = "".join(brain.reply(text))
         print(f"Legion: {reply}", flush=True)
         bottle.response.content_type = "text/plain; charset=utf-8"
         return clean_for_speech(reply)
@@ -217,7 +227,37 @@ def _synthesize_to_base64(synthesizer: Synthesizer, text: str) -> str:
         Path(temp_path).unlink(missing_ok=True)
 
 
-class _SSLWSGIRefServer(bottle.WSGIRefServer):
+class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+    """One thread per connection. wsgiref's own server handles them strictly one at a time, and a
+    browser that opens a connection and then says nothing -- which Safari does routinely, to have
+    one ready -- left every real request queued behind it, forever: the page sat on "thinking"."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:  # noqa: ANN001 -- matches socketserver
+        # A silent connection timing out, or a phone dropping one mid-handshake, is routine here,
+        # and there's no console for the traceback to go to anyway.
+        if not isinstance(sys.exc_info()[1], (OSError, ssl.SSLError)):
+            super().handle_error(request, client_address)
+
+
+class _QuietHandler(WSGIRequestHandler):
+    # Bounds how long any one connection can sit silent, now that each has a thread of its own to
+    # tie up. Only counts time spent waiting on the socket, never the model's thinking time.
+    timeout = 30
+
+    def log_request(self, *args, **kwargs) -> None:
+        pass
+
+
+class _ThreadedWSGIRefServer(bottle.WSGIRefServer):
+    def run(self, app) -> None:  # noqa: ANN001 -- matches bottle.ServerAdapter's own signature
+        self.srv = make_server(self.host, self.port, app, _ThreadingWSGIServer, _QuietHandler)
+        self.port = self.srv.server_port
+        self.srv.serve_forever()
+
+
+class _SSLWSGIRefServer(_ThreadedWSGIRefServer):
     """bottle has no built-in HTTPS support; this wraps the same wsgiref server it already uses
     with a TLS socket, rather than pulling in a second, heavier server just for this."""
 
@@ -227,19 +267,12 @@ class _SSLWSGIRefServer(bottle.WSGIRefServer):
         self._key_path = key_path
 
     def run(self, app) -> None:  # noqa: ANN001 -- matches bottle.ServerAdapter's own signature
-        from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
-
-        quiet = self.quiet
-
-        class QuietHandler(WSGIRequestHandler):
-            def log_request(self, *args, **kwargs):
-                if not quiet:
-                    super().log_request(*args, **kwargs)
-
-        self.srv = make_server(self.host, self.port, app, WSGIServer, QuietHandler)
+        self.srv = make_server(self.host, self.port, app, _ThreadingWSGIServer, _QuietHandler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(certfile=str(self._cert_path), keyfile=str(self._key_path))
-        self.srv.socket = context.wrap_socket(self.srv.socket, server_side=True)
+        # Handshake in each connection's own thread, not in accept(): otherwise a client that
+        # connects and never completes one stalls the accept loop itself, threads or no threads.
+        self.srv.socket = context.wrap_socket(self.srv.socket, server_side=True, do_handshake_on_connect=False)
         self.port = self.srv.server_port
         self.srv.serve_forever()
 
@@ -247,7 +280,7 @@ class _SSLWSGIRefServer(bottle.WSGIRefServer):
 def run_http(app: bottle.Bottle, host: str = "0.0.0.0", port: int = 8420) -> None:
     """Blocks serving ``app`` over plain HTTP -- call on a background thread if the calling thread
     is needed for something else (the GUI's own event loop, or run_https on another thread)."""
-    bottle.run(app, host=host, port=port, quiet=True)
+    bottle.run(app, server=_ThreadedWSGIRefServer(host=host, port=port, quiet=True), quiet=True)
 
 
 def run_https(app: bottle.Bottle, cert_path: Path, key_path: Path, host: str = "0.0.0.0", port: int = 8443) -> None:

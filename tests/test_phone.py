@@ -13,7 +13,7 @@ import wave
 import bottle
 import pytest
 
-from legion.phone import build_app, ensure_certificate, lan_address
+from legion.phone import _ThreadedWSGIRefServer, build_app, ensure_certificate, lan_address
 
 
 @pytest.fixture(scope="session")
@@ -70,7 +70,7 @@ def server(certificate):
             brain, transcriber, synthesizer, model="llama3.2:3b", host="http://127.0.0.1:11434",
             https_url="https://127.0.0.1:8443", cert_path=cert_path,
         )
-        wsgi_server = bottle.WSGIRefServer(host="127.0.0.1", port=0, quiet=True)
+        wsgi_server = _ThreadedWSGIRefServer(host="127.0.0.1", port=0, quiet=True)
         thread = threading.Thread(target=wsgi_server.run, args=(app,), daemon=True)
         thread.start()
         for _ in range(100):
@@ -245,6 +245,81 @@ class TestRoutes:
                 assert json.loads(response.read())["model"] == "m"
         finally:
             wsgi_server.srv.shutdown()
+
+
+class TestConcurrency:
+    """The page sat on "thinking" forever because the server took one connection at a time, and a
+    browser that opens one and says nothing -- Safari does, routinely -- blocked everything behind it."""
+
+    def test_a_silent_connection_does_not_block_real_requests(self, server):
+        import socket
+
+        base_url, *_ = server()
+        port = int(base_url.rsplit(":", 1)[1])
+        with socket.create_connection(("127.0.0.1", port)):  # connects, then never sends a byte
+            with urllib.request.urlopen(f"{base_url}/config", timeout=5) as response:
+                assert response.status == 200
+
+    def test_a_silent_connection_does_not_block_https_either(self, certificate):
+        import socket
+        import ssl
+
+        from legion.phone import _SSLWSGIRefServer
+
+        cert_path, key_path = certificate
+        app = build_app(
+            FakeBrain(), FakeTranscriber(), FakeSynthesizer(), model="m", host="h",
+            https_url="https://127.0.0.1:0", cert_path=cert_path,
+        )
+        wsgi_server = _SSLWSGIRefServer(cert_path, key_path, host="127.0.0.1", port=0, quiet=True)
+        threading.Thread(target=wsgi_server.run, args=(app,), daemon=True).start()
+        try:
+            for _ in range(100):
+                if getattr(wsgi_server, "srv", None) is not None:
+                    break
+                time.sleep(0.02)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            # A raw TCP connection that never starts the TLS handshake -- the worse case, since the
+            # handshake used to happen inside the accept loop itself.
+            with socket.create_connection(("127.0.0.1", wsgi_server.port)):
+                with urllib.request.urlopen(
+                    f"https://127.0.0.1:{wsgi_server.port}/config", context=ctx, timeout=5
+                ) as response:
+                    assert response.status == 200
+        finally:
+            wsgi_server.srv.shutdown()
+
+    def test_replies_still_take_turns_even_though_requests_no_longer_do(self, server):
+        # Brain's history isn't safe to mutate from two threads at once, so the lock around it is
+        # what keeps concurrent requests from corrupting a conversation.
+        active = {"now": 0, "most": 0}
+        lock = threading.Lock()
+
+        class SlowBrain(FakeBrain):
+            def reply(self, text):
+                with lock:
+                    active["now"] += 1
+                    active["most"] = max(active["most"], active["now"])
+                time.sleep(0.15)
+                with lock:
+                    active["now"] -= 1
+                yield "Done."
+
+        base_url, *_ = server(brain=SlowBrain())
+
+        def ask():
+            request = urllib.request.Request(f"{base_url}/say", data=b"text=hi", method="POST")
+            urllib.request.urlopen(request, timeout=10).read()
+
+        threads = [threading.Thread(target=ask) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert active["most"] == 1
 
 
 class TestCertificate:
