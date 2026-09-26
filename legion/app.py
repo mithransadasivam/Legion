@@ -538,6 +538,12 @@ def _gui_loop(
             print("\nStanding down.")
 
     run(worker)
+    # run() returns once the window is closed -- but the worker thread pywebview starts for us
+    # isn't a daemon, and sits in an endless loop waiting for input. Without this, closing the
+    # window left Legion running with no window, still holding the phone ports and the microphone,
+    # and findable only in Task Manager -- and each later launch stacked another one on top.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 _MIC_POLL_SECONDS = 2.0
