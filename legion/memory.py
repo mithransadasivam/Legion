@@ -13,6 +13,13 @@ from pathlib import Path
 import ollama
 
 DEFAULT_FILE = Path.home() / ".legion" / "memory.txt"
+
+# How long Ollama keeps the model loaded after a request. Its own default is 5 minutes, and every
+# request resets the clock to whatever *that* request asked for -- so a single one that leaves it
+# out quietly undoes any longer setting, and the next question after a quiet spell waits for the
+# whole model to load from disk again. It lives here only because this is the lowest-level module
+# that talks to the model; every request Legion makes to it has to carry this.
+KEEP_ALIVE = "3h"
 MAX_NOTES_IN_PROMPT = 50
 
 # Facts about someone come in the first person, so anything else skips the model entirely.
@@ -103,6 +110,7 @@ class Memory:
                     {"role": "user", "content": f"Message: {statements}"},
                 ],
                 options={"temperature": 0},
+                keep_alive=KEEP_ALIVE,
             ).message.content
         except Exception:
             # A missed note costs little; a conversation that dies mid-sentence costs a lot.

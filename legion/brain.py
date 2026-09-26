@@ -7,7 +7,7 @@ import ollama
 
 from legion.calc import lookup as calc_lookup
 from legion.gcal import CALENDAR_NOT_CHECKED, CalendarCheck
-from legion.memory import Memory
+from legion.memory import KEEP_ALIVE, Memory
 from legion.persona import CALENDAR_AWARE, RESEARCH_AWARE, SEARCH_SYSTEM_PROMPT, SIR, SYSTEM_PROMPT
 from legion.research import NOT_CHECKED as RESEARCH_NOT_CHECKED
 from legion.research import ResearchCheck
@@ -51,7 +51,7 @@ class Brain:
 
     def load(self) -> None:
         """Load the model into memory now, rather than stalling the first reply for several seconds."""
-        self._client.generate(model=self._model, prompt="")
+        self._client.generate(model=self._model, prompt="", keep_alive=KEEP_ALIVE)
 
     def reply(self, text: str) -> Iterator[str]:
         """Stream a reply token by token, keeping recent turns as conversational context."""
@@ -90,7 +90,7 @@ class Brain:
             messages.insert(-1, {"role": "system", "content": calc.results})
         parts: list[str] = []
         try:
-            for chunk in self._client.chat(model=self._model, messages=messages, stream=True):
+            for chunk in self._client.chat(model=self._model, messages=messages, stream=True, keep_alive=KEEP_ALIVE):
                 if token := chunk.message.content:
                     parts.append(token)
                     yield token

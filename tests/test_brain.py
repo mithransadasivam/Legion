@@ -16,7 +16,7 @@ def sent(monkeypatch) -> list[list[dict]]:
         def __init__(self, **kwargs) -> None:
             pass
 
-        def chat(self, model, messages, stream):
+        def chat(self, model, messages, stream, **kwargs):
             conversations.append([dict(message) for message in messages])
             for token in ("Right ", "away, ", "sir."):
                 yield SimpleNamespace(message=SimpleNamespace(content=token))
@@ -27,6 +27,34 @@ def sent(monkeypatch) -> list[list[dict]]:
 
 def drain(brain: Brain, text: str) -> str:
     return "".join(brain.reply(text))
+
+
+def test_every_request_to_the_model_asks_it_to_stay_loaded(monkeypatch):
+    # Ollama resets its unload timer to whatever each request asks for, and its default is 5
+    # minutes -- so one request that leaves this out undoes a longer setting, and the next question
+    # after a quiet spell waits for the whole model to load from disk again.
+    from legion.memory import KEEP_ALIVE
+
+    seen: list[tuple[str, object]] = []
+
+    class RecordingClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def generate(self, **kwargs):
+            seen.append(("generate", kwargs.get("keep_alive")))
+
+        def chat(self, **kwargs):
+            seen.append(("chat", kwargs.get("keep_alive")))
+            yield SimpleNamespace(message=SimpleNamespace(content="Fine."))
+
+    monkeypatch.setattr(brain_module.ollama, "Client", RecordingClient)
+    brain = Brain(model="m", host="h")
+
+    brain.load()
+    drain(brain, "Hello")
+
+    assert seen == [("generate", KEEP_ALIVE), ("chat", KEEP_ALIVE)]
 
 
 def test_web_results_are_handed_to_the_model_with_the_question(sent):
@@ -214,7 +242,7 @@ def test_a_fact_told_just_now_is_in_the_prompt_for_this_very_reply(sent, tmp_pat
         def __init__(self, **kwargs) -> None:
             pass
 
-        def chat(self, model, messages, options):
+        def chat(self, model, messages, options, **kwargs):
             return SimpleNamespace(message=SimpleNamespace(content="The user's name is Mithran."))
 
     # Brain and Memory share the one ollama module, so each gets its own stub in turn.
@@ -239,7 +267,7 @@ def test_the_sir_reminder_comes_after_the_users_own_name_note(sent, tmp_path, mo
         def __init__(self, **kwargs) -> None:
             pass
 
-        def chat(self, model, messages, options):
+        def chat(self, model, messages, options, **kwargs):
             return SimpleNamespace(message=SimpleNamespace(content="The user's name is Mithran."))
 
     chat_stub = memory_module.ollama.Client

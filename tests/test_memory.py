@@ -15,7 +15,7 @@ def model(monkeypatch):
         def __init__(self, **kwargs) -> None:
             pass
 
-        def chat(self, model, messages, options):
+        def chat(self, model, messages, options, **kwargs):
             state["asked"].append(messages[-1]["content"])
             if state["error"]:
                 raise state["error"]
