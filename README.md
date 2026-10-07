@@ -48,7 +48,11 @@ On an 8 GB M1 MacBook Air, a recorded question goes from audio in to spoken answ
 
 **It never guesses at arithmetic.** Small models are unreliable at exact maths — asked "what's 847 times 39", they'll often just confidently invent a wrong number. [`legion/calc.py`](legion/calc.py) recognizes a purely arithmetic question the same way [`legion/search.py`](legion/search.py) recognizes a search-worthy one — a plain text gate, no model involved in the decision — and computes the real answer with Python's own numbers. The expression is evaluated by walking its parsed syntax tree by hand rather than `eval()`, so only numeric literals and a fixed set of arithmetic operators can ever run; there's no path to executing arbitrary code.
 
-**It can answer from real research, not just what it half-remembers.** For robotics, medicine, and CRISPR/gene-editing questions, [`legion/research.py`](legion/research.py) searches a small local library of research summaries — [`legion/knowledge/*.md`](legion/knowledge/) — by plain keyword overlap (no embeddings, no vector database, nothing multi-gigabyte to install) and hands the best-matching notes to the model as context, the same one-turn-honesty pattern web search and calendar results use. Each entry is a short, Legion-authored summary of one real paper's finding, with a citation for provenance — never a verbatim excerpt, both for copyright and because a dense paper excerpt is unpleasant to have read aloud. The persona also leans into ambitious or contested ideas here rather than hedging everything into vagueness: it'll say plainly when something is solid versus still genuinely uncertain or debated, without refusing to engage with the interesting, unproven version of an idea.
+**It can answer from real research, not just what it half-remembers.** Legion ships with 94 short, Legion-authored summaries of real papers on robotics, medicine, and CRISPR/gene editing — [`legion/knowledge/*.md`](legion/knowledge/), each with a citation, never a verbatim excerpt, both for copyright and because a dense paper excerpt is unpleasant to have read aloud. The persona also leans into ambitious or contested ideas here rather than hedging everything into vagueness: it'll say plainly when something is solid versus still genuinely uncertain or debated, without refusing to engage with the interesting, unproven version of an idea.
+
+**You can teach it your own documents.** Drop PDFs, `.txt`, or `.md` files into `~/.legion/library/` (or wherever `--library` points) and Legion learns them — no restart, no command: a background thread notices files that are added, changed, or removed and updates its index on its own. This is retrieval-augmented generation done in [`legion/rag.py`](legion/rag.py): each file is cut into passages of a few sentences by [`legion/documents.py`](legion/documents.py), each passage is turned into a vector by a small free embedding model running in Ollama (`nomic-embed-text`, 274 MB), and a question is answered by handing the model the passages whose vectors point most nearly the same way. Searching by meaning rather than by keyword is the point: asked about "heart attacks and cholesterol drugs", it finds the note on PCSK9 inhibitors, which shares none of those words. Replies say which file, and for a PDF which page, they used. The index is cached in `~/.legion/library-index.*` keyed by each file's size and modification time, so restarting costs nothing and only new or changed files are ever re-embedded; everything stays on this machine.
+
+Numbers behind the choices, all measured rather than guessed. Against the real model, questions genuinely about the notes scored 0.73–0.86 cosine similarity and everything unrelated (jokes, weather, coffee) topped out at 0.57, so a passage only counts above 0.70 and must also sit within 0.08 of the best match — vague questions like "how do airplanes fly" (0.69, against a paper on drone flocks) err towards silence, since a miss just means answering from what the model already knows. And the embedding model has to stay out of the chat model's way: Ollama loads one model at a time, so loading both at once took ~87 s each instead of 44 s and 28 s, and an early version stalled the first question for 120 s. So indexing waits until the chat model has loaded, a question never waits on a cold embedder (it falls back to the keyword search over the curated notes instead), and when the library holds documents that can't be searched yet Legion is told so, because the alternative was watching it confidently invent a number for a file it couldn't see.
 
 **Replies are cleaned before they're spoken.** Language models love markdown. [`clean_for_speech`](legion/text.py) strips emphasis, headings, list markers, links, and emoji, so the voice never reads out "asterisk asterisk".
 
@@ -84,6 +88,7 @@ Requires macOS, Linux, or Windows with Python 3.11+. The commands below are for 
 brew install ollama uv
 brew services start ollama
 ollama pull llama3.1:8b
+ollama pull nomic-embed-text   # optional: searches your own documents by meaning
 
 git clone https://github.com/mithransadasivam/legion.git
 cd legion
@@ -168,6 +173,8 @@ Every option can also be set with an environment variable.
 | `--calendar-credentials` | `LEGION_CALENDAR_CREDENTIALS` | `~/.legion/calendar_credentials.json` |
 | `--calendar-token` | `LEGION_CALENDAR_TOKEN` | `~/.legion/calendar_token.json` |
 | `--no-calendar` | `LEGION_CALENDAR=0` | calendar enabled once credentials exist |
+| `--library` | `LEGION_LIBRARY` | `~/.legion/library` (drop your own .pdf/.txt/.md files here) |
+| `--embed-model` | `LEGION_EMBED_MODEL` | `nomic-embed-text` |
 
 Voices are listed at [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); pass any name in the `en_GB-alan-medium` format.
 
@@ -199,7 +206,9 @@ legion/
 ├── search.py    Decides when to check the web, and formats what comes back
 ├── gcal.py      Read-only Google Calendar access, decided and formatted the same way as search.py
 ├── calc.py      Exact arithmetic via a hand-rolled safe expression evaluator, never eval()
-├── research.py  Keyword retrieval over legion/knowledge/*.md, for robotics/medicine/CRISPR questions
+├── research.py  Keyword retrieval over legion/knowledge/*.md; the fallback when semantic search isn't ready
+├── rag.py       Semantic retrieval: embeddings via Ollama, an on-disk index that re-embeds only what changed
+├── documents.py Reads PDFs, text and markdown, and cuts them into passages that remember their page
 ├── knowledge/   Legion-authored research summaries research.py searches, one topic per .md file
 ├── memory.py    Notes about the user that last between sessions
 ├── keys.py      Non-blocking Enter detection, for cutting in mid-reply

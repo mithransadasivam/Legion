@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from legion.brain import Brain
 from legion.gcal import CalendarClient
 from legion.memory import DEFAULT_FILE, Memory
+from legion.rag import EMBED_MODEL, QUERY_TIMEOUT_SECONDS, Embedder, Retriever, chat_model_loaded
 from legion.research import Library
 from legion.search import lookup
 from legion.text import SentenceBuffer, clean_for_speech
@@ -41,9 +42,24 @@ def main(argv: list[str] | None = None) -> int:
     calendar = None
     if not args.no_calendar and args.calendar_credentials.exists():
         calendar = CalendarClient(args.calendar_credentials, args.calendar_token).lookup
-    # Loaded once and shared with the phone's own Brain too: read-only notes, safe from any of
-    # the thread-safety concerns that keep the phone from sharing a Brain or Memory instance.
-    research = Library().lookup
+    # Built once and shared with the phone's own Brain too: it only ever reads, so none of the
+    # thread-safety concerns that keep the phone from sharing a Brain or Memory apply. Indexing
+    # runs in the background, so nothing here waits on it -- and if Ollama has no embedding model,
+    # questions quietly fall back to the keyword search over the same curated notes.
+    args.library.mkdir(parents=True, exist_ok=True)
+    retriever = Retriever(
+        Embedder(args.host, args.embed_model),
+        args.embed_model,
+        library_dir=args.library,
+        index_path=DEFAULT_FILE.parent / "library-index.json",
+        fallback=Library().lookup,
+        embed_query=Embedder(args.host, args.embed_model, timeout=QUERY_TIMEOUT_SECONDS),
+        # Ollama loads one model at a time: indexing while the chat model is still loading would
+        # make each take as long as both together, so it waits until the chat model is ready.
+        wait_until=lambda: chat_model_loaded(args.host, args.model),
+    )
+    retriever.start()
+    research = retriever.lookup
 
     if args.gui:
         # Checking Ollama and loading the model can take a good while right after a reboot, and
@@ -214,6 +230,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         default=os.environ.get("LEGION_CALENDAR", "1") == "0",
         help="ignore calendar_credentials.json even if it's there",
+    )
+    parser.add_argument(
+        "--library",
+        type=Path,
+        metavar="DIR",
+        default=Path(os.environ.get("LEGION_LIBRARY", DEFAULT_FILE.parent / "library")),
+        help="a folder of your own documents (.pdf, .txt, .md) for Legion to learn from; add or change "
+        "files while it runs and they're picked up on their own (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--embed-model",
+        default=os.environ.get("LEGION_EMBED_MODEL", EMBED_MODEL),
+        help="Ollama model used to search the library by meaning (default: %(default)s)",
     )
 
     args = parser.parse_args(argv)

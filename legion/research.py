@@ -59,11 +59,11 @@ def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[Entry]:
         return []
     entries: list[Entry] = []
     for path in sorted(knowledge_dir.glob("*.md")):
-        entries.extend(_parse(path.stem, path.read_text(encoding="utf-8")))
+        entries.extend(parse_entries(path.stem, path.read_text(encoding="utf-8")))
     return entries
 
 
-def _parse(topic: str, text: str) -> list[Entry]:
+def parse_entries(topic: str, text: str) -> list[Entry]:
     entries = []
     for block in _ENTRY_HEADING.split(text)[1:]:
         lines = block.strip().splitlines()
